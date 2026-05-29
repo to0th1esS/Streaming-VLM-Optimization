@@ -59,6 +59,14 @@ def main():
         for result in dense_results
     ]
     dense_total = sum(row["latency_ms"] for row in dense_latency_rows)
+    warmup_ratio = float(args.dynamic_ratios.split(",")[0].strip())
+    encode_stream_turbovit_v1(
+        model,
+        video[: min(video.shape[0], args.refresh_interval + 1)],
+        refresh_interval=args.refresh_interval,
+        dynamic_ratio=warmup_ratio,
+        warmup_frames=1,
+    )
 
     summary_rows = []
     for ratio_text in args.dynamic_ratios.split(","):
