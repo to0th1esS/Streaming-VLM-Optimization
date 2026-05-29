@@ -1,0 +1,14 @@
+name: vit-sparse-gpu
+channels:
+  - conda-forge
+  - defaults
+dependencies:
+  - python=3.11
+  - numpy
+  - logzero
+  - pip
+  - pip:
+      - torch --index-url https://download.pytorch.org/whl/cu128
+      - torchvision --index-url https://download.pytorch.org/whl/cu128
+      - imageio
+      - imageio-ffmpeg
