@@ -72,6 +72,17 @@ Our setup: Ubuntu 22.04, CUDA 12.6, 8x Nvidia H800 (80GB)
     ```
 - Increases the memory map limit for processes (needed for offloading KV-Caches): `sudo sysctl -w vm.max_map_count=262144`
 
+## Local/Remote Research Workflow
+
+This fork supports a split workflow for iterative research:
+
+- Local machine: lightweight code certification with `.\run_certification_experiment.ps1`
+- Remote GPU server: large-scale evaluation with `scripts/run_remote_eval_template.sh`
+
+Local environments, downloaded tools, model weights, datasets, logs, and result
+files are ignored by git. See `docs/local_remote_workflow.md` for the full
+workflow.
+
 ## Evaluation
 
 ```bash

@@ -18,6 +18,11 @@ __pycache__
 *.err
 *.png
 *.csv
+*.pt
+*.pth
+*.safetensors
+*.bin
+*.ckpt
 log*
 
 # Other
@@ -30,3 +35,8 @@ model_zoo/*
 results/*
 !results/.gitkeep
 build/*
+.tools/
+.conda-envs/
+wandb/
+runs/
+outputs/

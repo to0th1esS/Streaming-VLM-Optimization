@@ -1,0 +1,31 @@
+name: streaming-vlm-opt
+channels:
+  - pytorch
+  - nvidia
+  - conda-forge
+  - defaults
+dependencies:
+  - python=3.11
+  - pip
+  - pytorch
+  - torchvision
+  - torchaudio
+  - pytorch-cuda=12.1
+  - numpy
+  - pandas
+  - matplotlib
+  - seaborn
+  - tqdm
+  - pillow
+  - requests
+  - pip:
+      - accelerate>=1.4.0
+      - decord
+      - httpx==0.23.3
+      - imgcat
+      - kaggle
+      - logzero
+      - ninja
+      - openai==1.57.1
+      - optree>=0.14.0
+      - transformers @ git+https://github.com/huggingface/transformers.git@66bc4def9505fa7c7fe4aa7a248c34a026bb552b
