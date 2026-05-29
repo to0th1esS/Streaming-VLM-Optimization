@@ -22,6 +22,9 @@ else
   echo "No upstream tracking branch configured; skipping git pull."
 fi
 
+RESULT_PATH="${RESULT_PATH:-results/pre_eval_remote_certification.json}" \
+"$(dirname "$0")/run_remote_certification.sh"
+
 "$CONDA_BIN" run -n "$CONDA_ENV" python -c "import sys; print(sys.version)"
 
 source "$("$CONDA_BIN" info --base)/etc/profile.d/conda.sh"

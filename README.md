@@ -80,6 +80,7 @@ This fork supports a split workflow for iterative research:
 - Remote GPU server: lightweight certification with
   `scripts/run_remote_certification.sh`, then large-scale evaluation with
   `scripts/run_remote_eval_template.sh`
+- Fixed local-to-remote loop: `.\run_research_pipeline.ps1`
 
 Local environments, downloaded tools, model weights, datasets, logs, and result
 files are ignored by git. See `docs/local_remote_workflow.md` for the full

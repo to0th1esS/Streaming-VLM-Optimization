@@ -17,6 +17,25 @@ Run the lightweight certification before committing:
 .\run_certification_experiment.ps1
 ```
 
+For the fixed local-to-remote pipeline, run:
+
+```powershell
+.\run_research_pipeline.ps1
+```
+
+This performs local certification, commits changed code, pushes to the `server`
+remote, prepares remote model links under `/home/models`, and runs remote
+certification.
+
+To also launch a remote large-scale evaluation after certification:
+
+```powershell
+.\run_research_pipeline.ps1 -RunRemoteEval `
+  -RemoteEvalCondaEnv rekv `
+  -Model llava_ov_0.5b `
+  -Dataset qaego4d
+```
+
 The script uses:
 
 ```text
@@ -92,6 +111,28 @@ CONDA_BIN=/root/miniconda3/bin/conda \
 CONDA_ENV=base \
 bash scripts/run_remote_certification.sh
 ```
+
+Prepare model entries under `/home/models`:
+
+```bash
+REPO_DIR=/home/yangjin/1#Streaming-VLM-Optimization
+cd "$REPO_DIR"
+MODEL_ROOT=/home/models \
+MIRROR_ROOT=/home/Streaming-VLM-Optimization/model_zoo \
+bash scripts/setup_remote_models.sh
+```
+
+By default this prepares:
+
+```text
+llava-onevision-qwen2-0.5b-ov-hf
+llava-onevision-qwen2-7b-ov-hf
+LanguageBind-Video-LLaVA-7B-hf
+LongVA-7B
+```
+
+If a model already exists in `/home/Streaming-VLM-Optimization/model_zoo`, the
+script links it into `/home/models` instead of duplicating the checkpoint.
 
 ## Recommended iteration
 
