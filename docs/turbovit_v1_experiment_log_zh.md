@@ -432,3 +432,186 @@ DefaultCPUAllocator: not enough memory
 - 将当前 `dynamic_ratio` 从全层固定值升级为 layer-wise policy：浅层更保守、深层更激进。
 - 将 token selector 从单纯 top-ratio 改为 threshold + ratio cap，避免静态背景和运动主体被同等处理。
 - 对 v2 继续推进 dual-anchor / rolling-anchor，让 stale reference drift 成为可控变量。
+
+## GPU 实验记录：真实 ViT-B/16 on A100
+
+背景：
+
+- 本地机器有 RTX 5070，但最初认证环境安装的是 CPU 版 PyTorch，因此上一轮真实 ViT 默认跑在 CPU。
+- 已单独创建本地 GPU 环境 `.conda-envs/vit-sparse-gpu`，安装 `torch 2.11.0+cu128` 和 `torchvision 0.26.0+cu128`。
+- 本地 PyTorch 可以识别 RTX 5070，但创建 CUDA tensor 时出现 `CUDA error: out of memory`，即使 `nvidia-smi` 显示仍有空闲显存。该问题更像 Windows/WDDM + 当前 CUDA wheel + RTX 50 系列运行时兼容问题。
+- 因此本轮正式 GPU 验证切到远程服务器 A100：
+
+```text
+torch: 2.5.1+cu124
+torchvision: 0.20.1+cu124
+cuda_available: True
+gpu: NVIDIA A100-SXM4-80GB
+```
+
+### Step 1：真实 ViT-B/16 Turbo-v1 GPU sweep
+
+新增脚本：
+
+```text
+experiments/turbovit_v1/scripts/run_synthetic_vit_turbo.py
+scripts/run_synthetic_vit_turbo_local.ps1
+```
+
+远程命令：
+
+```bash
+CUDA_VISIBLE_DEVICES=0 /root/miniconda3/bin/conda run -n base \
+  python -m experiments.turbovit_v1.scripts.run_synthetic_vit_turbo \
+  --output-dir results/turbovit_v1/synthetic_vit_turbo_gpu_warm \
+  --weights none \
+  --num-frames 24 \
+  --refresh-interval 4 \
+  --dynamic-ratios 0.25,0.5,0.75 \
+  --device cuda
+```
+
+结果：
+
+```text
+dense latency/frame: 6.864 ms
+
+r=0.25:
+  turbo latency/frame: 7.574 ms
+  speedup: 0.907x
+  cosine: 0.999756
+
+r=0.50:
+  turbo latency/frame: 7.901 ms
+  speedup: 0.869x
+  cosine: 0.999869
+
+r=0.75:
+  turbo latency/frame: 7.993 ms
+  speedup: 0.859x
+  cosine: 0.999952
+```
+
+分析：
+
+- 校正 CUDA warmup 后，v1 在 A100 上没有超过 dense baseline。
+- 原因不是跨帧冗余不存在，而是当前功能版 sparse update 没有高效 kernel：
+  - 每层都要算 QKV；
+  - 每层都要 cosine + top-k；
+  - gather/scatter 破坏连续计算；
+  - token 级稀疏没有转化成 GPU 上足够高效的矩阵计算。
+- 这直接解释了为什么“逐层逐 token 判别 + 选择性重算”的朴素 v1 很难成为最终系统。
+- 论文叙事中可以把 v1 定位为机制验证版，而不是最终加速版。
+
+### Step 2：真实 ViT-B/16 Turbo-v2 GPU routing sweep
+
+新增脚本：
+
+```text
+experiments/turbovit_v1/scripts/run_synthetic_vit_v2.py
+scripts/run_synthetic_vit_v2_local.ps1
+```
+
+远程 24 帧快速验证：
+
+```text
+skip=0.000100:
+  speedup: 0.899x
+  cosine: 0.999952
+  dense/sparse/skip: 6/18/0
+
+skip=0.000500:
+  speedup: 1.309x
+  cosine: 0.999837
+  dense/sparse/skip: 6/6/12
+
+skip=0.001000:
+  speedup: 1.954x
+  cosine: 0.999794
+  dense/sparse/skip: 6/6/12
+```
+
+24 帧样本中两个阈值的决策分布相同但耗时差异较大，说明短序列 GPU timing 噪声仍明显。因此追加 96 帧验证。
+
+远程 96 帧命令：
+
+```bash
+CUDA_VISIBLE_DEVICES=0 /root/miniconda3/bin/conda run -n base \
+  python -m experiments.turbovit_v1.scripts.run_synthetic_vit_v2 \
+  --output-dir results/turbovit_v1/synthetic_vit_v2_gpu_96f \
+  --weights none \
+  --num-frames 96 \
+  --refresh-interval 4 \
+  --dynamic-ratio 0.75 \
+  --skip-thresholds 0.0001,0.0005,0.001 \
+  --dense-threshold 0.006 \
+  --device cuda
+```
+
+96 帧结果：
+
+```text
+dense latency/frame: 6.354 ms
+
+skip=0.000100:
+  turbo latency/frame: 6.130 ms
+  speedup: 1.036x
+  cosine: 0.999970
+  mse: 0.0000626
+  dense/sparse/skip: 24/52/20
+
+skip=0.000500:
+  turbo latency/frame: 2.742 ms
+  speedup: 2.317x
+  cosine: 0.999905
+  mse: 0.0001929
+  dense/sparse/skip: 24/10/62
+
+skip=0.001000:
+  turbo latency/frame: 2.339 ms
+  speedup: 2.717x
+  cosine: 0.999880
+  mse: 0.0002417
+  dense/sparse/skip: 24/6/66
+```
+
+分析：
+
+- v2 结果明显优于 v1，说明“先做便宜帧级路由，再决定是否进入逐层 sparse update”是正确方向。
+- 当 `skip_threshold` 增大，更多帧直接复用 rolling anchor output，速度显著提升。
+- 保真度下降很小，synthetic streaming 场景下 cosine 仍保持在 `0.99988+`。
+- 这说明当前最有价值的研究点不是单纯降低 token ratio，而是减少进入逐层 selector 的次数。
+- 对应论文贡献可以表述为：
+  - v1 证明 ViT 内部存在跨帧冗余；
+  - v1 同时暴露逐层 token 判别在 GPU 上的开销瓶颈；
+  - v2 通过帧级 routing 将昂贵 token selector 变成条件触发，从而释放真实加速。
+
+### Step 3：预训练 ViT 权重状态
+
+尝试远程直接下载 torchvision ImageNet ViT-B/16 权重失败：
+
+```text
+expected hash: c867db91
+actual hash: e3b0c442...
+```
+
+含义：
+
+- 远程下载得到空文件，属于网络/下载链路问题，不是模型代码问题。
+- 本机已有完整权重文件，但 scp 到远程两次超时，第二次中断时远程文件约 254MB，完整文件应约 330MB。
+
+当前处理：
+
+- 暂时不把 ImageNet 预训练结果写入主实验结论。
+- 下一步应把模型文件统一放入 `/home/mllm/models`，并使用可恢复传输方式或服务器侧稳定下载工具。
+
+本轮 GPU 结论：
+
+- v1 真实 ViT GPU 结果支持“朴素逐层 token sparse 不够”的判断。
+- v2 真实 ViT GPU 结果给出第一组正向加速证据：`2.3x - 2.7x`，但目前仍是 synthetic + random weights。
+- 下一轮必须补齐：
+  - 预训练 vision encoder；
+  - 真实视频输入；
+  - 更长视频序列；
+  - 多 seed / 多片段统计；
+  - v2 routing signal 从 patch MSE 升级为 low-layer feature drift 或 dual-anchor drift。
