@@ -7,7 +7,11 @@ CONDA_ENV="${CONDA_ENV:-base}"
 RESULT_PATH="${RESULT_PATH:-results/remote_vit_sparse_certification.json}"
 
 cd "$REPO_DIR"
-git pull --ff-only
+if git rev-parse --abbrev-ref --symbolic-full-name '@{u}' >/dev/null 2>&1; then
+  git pull --ff-only
+else
+  echo "No upstream tracking branch configured; skipping git pull."
+fi
 
 "$CONDA_BIN" run -n "$CONDA_ENV" python scripts/verify_vit_sparse_patch.py \
   --experiment-name remote_vit_sparse_certification \

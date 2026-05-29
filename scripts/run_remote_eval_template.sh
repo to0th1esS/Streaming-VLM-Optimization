@@ -16,7 +16,11 @@ N_LOCAL="${N_LOCAL:-15000}"
 RETRIEVE_SIZE="${RETRIEVE_SIZE:-64}"
 
 cd "$REPO_DIR"
-git pull --ff-only
+if git rev-parse --abbrev-ref --symbolic-full-name '@{u}' >/dev/null 2>&1; then
+  git pull --ff-only
+else
+  echo "No upstream tracking branch configured; skipping git pull."
+fi
 
 "$CONDA_BIN" run -n "$CONDA_ENV" python -c "import sys; print(sys.version)"
 
