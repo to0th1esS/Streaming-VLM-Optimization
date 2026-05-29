@@ -136,6 +136,15 @@ If a model already exists in `/home/Streaming-VLM-Optimization/model_zoo`, the
 script links it into `/home/mllm/models` instead of duplicating the checkpoint.
 It also links the current repository's `model_zoo/<name>` to `/home/mllm/models/<name>`.
 
+To force a physical Hugging Face download into `/home/mllm/models`, bypassing
+existing mirrors:
+
+```bash
+FORCE_DOWNLOAD=1 \
+MODEL_ROOT=/home/mllm/models \
+bash scripts/setup_remote_models.sh
+```
+
 ## Recommended iteration
 
 1. Modify code locally.

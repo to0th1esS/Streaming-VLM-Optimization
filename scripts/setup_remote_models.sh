@@ -10,6 +10,7 @@ MIRROR_ROOT="${MIRROR_ROOT:-/home/Streaming-VLM-Optimization/model_zoo}"
 REPO_MODEL_ZOO="${REPO_MODEL_ZOO:-model_zoo}"
 HF_HOME="${HF_HOME:-$MODEL_ROOT/.cache/huggingface}"
 MODELS="${MODELS:-llava-onevision-qwen2-0.5b-ov-hf llava-onevision-qwen2-7b-ov-hf Video-LLaVA-7B-hf LongVA-7B}"
+FORCE_DOWNLOAD="${FORCE_DOWNLOAD:-0}"
 
 mkdir -p "$MODEL_ROOT" "$HF_HOME" "$REPO_MODEL_ZOO"
 
@@ -49,10 +50,18 @@ for model_name in $MODELS; do
   target="$MODEL_ROOT/$model_name"
   repo_link="$REPO_MODEL_ZOO/$model_name"
 
+  if [ "$FORCE_DOWNLOAD" = "1" ] && { [ -e "$target" ] || [ -L "$target" ]; }; then
+    rm -rf "$target"
+  fi
+
   if [ -e "$target" ]; then
     echo "[model] exists: $target"
   else
-    mirror="$(find_existing_mirror "$model_name" || true)"
+    if [ "$FORCE_DOWNLOAD" = "1" ]; then
+      mirror=""
+    else
+      mirror="$(find_existing_mirror "$model_name" || true)"
+    fi
     if [ -n "$mirror" ]; then
     ln -s "$mirror" "$target"
     echo "[model] linked: $target -> $mirror"
