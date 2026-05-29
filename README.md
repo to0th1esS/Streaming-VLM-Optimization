@@ -81,6 +81,8 @@ This fork supports a split workflow for iterative research:
   `scripts/run_remote_certification.sh`, then large-scale evaluation with
   `scripts/run_remote_eval_template.sh`
 - Fixed local-to-remote loop: `.\run_research_pipeline.ps1`
+- Remote model root: `/home/mllm/models`; repository `model_zoo/` entries are
+  symlinked to that root for compatibility with existing loaders.
 
 Local environments, downloaded tools, model weights, datasets, logs, and result
 files are ignored by git. See `docs/local_remote_workflow.md` for the full

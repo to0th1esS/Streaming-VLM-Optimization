@@ -4,6 +4,8 @@ param(
     [string]$RemoteRepoDir = "/home/yangjin/1#Streaming-VLM-Optimization",
     [string]$RemoteCondaBin = "/root/miniconda3/bin/conda",
     [string]$RemoteCondaEnv = "base",
+    [string]$RemoteModelRoot = "/home/mllm/models",
+    [string]$RemoteMirrorRoot = "/home/Streaming-VLM-Optimization/model_zoo",
     [string]$CommitMessage = "",
     [switch]$SkipCommit,
     [switch]$SkipModelSetup,
@@ -55,8 +57,8 @@ $Branch = git -c safe.directory=$Root branch --show-current
 Run-Checked "git -c safe.directory=`"$Root`" push $RemoteName $Branch"
 
 if (-not $SkipModelSetup) {
-    Write-Host "`nStep 4/5: remote model setup under /home/models"
-    $ModelSetupCmd = "cd '$RemoteRepoDir' && MODEL_ROOT=/home/models MIRROR_ROOT=/home/Streaming-VLM-Optimization/model_zoo bash scripts/setup_remote_models.sh"
+    Write-Host "`nStep 4/5: remote model setup under $RemoteModelRoot"
+    $ModelSetupCmd = "cd '$RemoteRepoDir' && MODEL_ROOT=$RemoteModelRoot MIRROR_ROOT=$RemoteMirrorRoot REPO_MODEL_ZOO=model_zoo bash scripts/setup_remote_models.sh"
     Run-Checked "ssh -o BatchMode=yes $RemoteHost `"$ModelSetupCmd`""
 } else {
     Write-Host "`nStep 4/5: remote model setup skipped"
