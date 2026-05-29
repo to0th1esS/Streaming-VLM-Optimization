@@ -74,6 +74,7 @@ Use the remote template:
 
 ```bash
 REPO_DIR=/path/to/Streaming-VLM-Optimization \
+CONDA_BIN=/root/miniconda3/bin/conda \
 CONDA_ENV=rekv \
 MODEL=llava_ov_0.5b \
 DATASET=qaego4d \
@@ -82,6 +83,15 @@ bash scripts/run_remote_eval_template.sh
 
 The script does a fast-forward `git pull` and then runs `video_qa.run_eval` in
 the server's own conda environment.
+
+For a remote lightweight certification without model weights:
+
+```bash
+REPO_DIR=/path/to/Streaming-VLM-Optimization \
+CONDA_BIN=/root/miniconda3/bin/conda \
+CONDA_ENV=base \
+bash scripts/run_remote_certification.sh
+```
 
 ## Recommended iteration
 

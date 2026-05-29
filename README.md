@@ -77,7 +77,9 @@ Our setup: Ubuntu 22.04, CUDA 12.6, 8x Nvidia H800 (80GB)
 This fork supports a split workflow for iterative research:
 
 - Local machine: lightweight code certification with `.\run_certification_experiment.ps1`
-- Remote GPU server: large-scale evaluation with `scripts/run_remote_eval_template.sh`
+- Remote GPU server: lightweight certification with
+  `scripts/run_remote_certification.sh`, then large-scale evaluation with
+  `scripts/run_remote_eval_template.sh`
 
 Local environments, downloaded tools, model weights, datasets, logs, and result
 files are ignored by git. See `docs/local_remote_workflow.md` for the full

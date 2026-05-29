@@ -6,6 +6,7 @@ set -euo pipefail
 # and are not synchronized through git.
 
 REPO_DIR="${REPO_DIR:-$HOME/Streaming-VLM-Optimization}"
+CONDA_BIN="${CONDA_BIN:-conda}"
 CONDA_ENV="${CONDA_ENV:-rekv}"
 MODEL="${MODEL:-llava_ov_0.5b}"
 DATASET="${DATASET:-qaego4d}"
@@ -17,7 +18,9 @@ RETRIEVE_SIZE="${RETRIEVE_SIZE:-64}"
 cd "$REPO_DIR"
 git pull --ff-only
 
-source "$(conda info --base)/etc/profile.d/conda.sh"
+"$CONDA_BIN" run -n "$CONDA_ENV" python -c "import sys; print(sys.version)"
+
+source "$("$CONDA_BIN" info --base)/etc/profile.d/conda.sh"
 conda activate "$CONDA_ENV"
 
 python -m video_qa.run_eval \
