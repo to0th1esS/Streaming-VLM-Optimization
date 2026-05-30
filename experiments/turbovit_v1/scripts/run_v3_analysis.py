@@ -373,6 +373,71 @@ def build_correlation_rows(rows: List[Dict]) -> List[Dict]:
     return sorted(corr_rows, key=lambda item: item["abs_pearson"], reverse=True)
 
 
+def simulate_feature_gate_policies(rows: List[Dict], false_skip_cosine: float) -> List[Dict]:
+    signals = [
+        key
+        for key in rows[0].keys()
+        if key.startswith("layer") and key.endswith("_cos_to_long")
+    ] if rows else []
+    thresholds = [0.95, 0.97, 0.98, 0.99, 0.995, 0.998, 0.999, 0.9995, 0.9999]
+    policy_rows = []
+    dense_total = sum(float(row["dense_latency_ms"]) for row in rows)
+    for signal in signals:
+        for threshold in thresholds:
+            for mode in ["gate_skip_to_dense", "gate_reuse_to_dense"]:
+                latency_total = 0.0
+                cosines = []
+                mses = []
+                kept_dense = 0
+                kept_sparse = 0
+                kept_skip = 0
+                remedied_dense = 0
+                false_skip = 0
+                for row in rows:
+                    decision = row["decision"]
+                    should_gate = float(row[signal]) < threshold
+                    gate_skip = mode == "gate_skip_to_dense" and decision == "skip" and should_gate
+                    gate_reuse = mode == "gate_reuse_to_dense" and decision in ("skip", "sparse") and should_gate
+                    if gate_skip or gate_reuse:
+                        latency_total += float(row["dense_latency_ms"])
+                        cosines.append(1.0)
+                        mses.append(0.0)
+                        remedied_dense += 1
+                        kept_dense += 1
+                    else:
+                        latency_total += float(row["latency_ms"])
+                        cosine = float(row["output_cosine"])
+                        cosines.append(cosine)
+                        mses.append(float(row["output_mse"]))
+                        if decision == "dense":
+                            kept_dense += 1
+                        elif decision == "sparse":
+                            kept_sparse += 1
+                        elif decision == "skip":
+                            kept_skip += 1
+                            if cosine < false_skip_cosine:
+                                false_skip += 1
+                policy_rows.append(
+                    {
+                        "signal": signal,
+                        "threshold": threshold,
+                        "mode": mode,
+                        "speedup": dense_total / latency_total if latency_total > 0 else 0.0,
+                        "mean_output_cosine": sum(cosines) / len(cosines) if cosines else 0.0,
+                        "mean_output_mse": sum(mses) / len(mses) if mses else 0.0,
+                        "false_skip_count": false_skip,
+                        "kept_dense_or_remedied": kept_dense,
+                        "kept_sparse": kept_sparse,
+                        "kept_skip": kept_skip,
+                        "remedied_to_dense": remedied_dense,
+                    }
+                )
+    return sorted(
+        policy_rows,
+        key=lambda item: (item["false_skip_count"], -item["mean_output_cosine"], -item["speedup"]),
+    )
+
+
 def main():
     args = parse_args()
     torch.manual_seed(args.seed)
@@ -386,12 +451,14 @@ def main():
     frame_rows = analyze_v2_routing(model, video, dense_records, args, device)
     summary = summarize(frame_rows, args, model_name, weights_name, device, model.image_size)
     corr_rows = build_correlation_rows(frame_rows)
+    policy_rows = simulate_feature_gate_policies(frame_rows, args.false_skip_cosine)
     decision_rows = summary["decision_summary"]
     false_skip_rows = [row for row in frame_rows if row["false_skip"]]
 
     write_json(output_dir / "v3_analysis_summary.json", summary)
     write_csv(output_dir / "frame_analysis.csv", frame_rows)
     write_csv(output_dir / "signal_correlations.csv", corr_rows)
+    write_csv(output_dir / "policy_simulation.csv", policy_rows)
     write_csv(output_dir / "decision_summary.csv", decision_rows)
     write_csv(output_dir / "false_skip.csv", false_skip_rows)
     write_line_svg(output_dir / "timeline_output_cosine.svg", frame_rows, "frame_idx", "output_cosine", "Output cosine over stream")
@@ -400,6 +467,8 @@ def main():
     if corr_rows:
         best_signal = corr_rows[0]["signal"]
         write_scatter_svg(output_dir / "scatter_best_signal_vs_error.svg", frame_rows, best_signal, "final_error", f"{best_signal} vs final error")
+    if policy_rows:
+        write_json(output_dir / "best_policy_simulation.json", policy_rows[0])
 
     print("Turbo-ViT v3 routing analysis completed")
     print(f"summary: {output_dir / 'v3_analysis_summary.json'}")
@@ -408,6 +477,14 @@ def main():
     print(f"false skip count: {summary['false_skip_count']}")
     if corr_rows:
         print(f"best signal: {corr_rows[0]['signal']} corr={corr_rows[0]['pearson_with_final_error']:.4f}")
+    if policy_rows:
+        print(
+            "best simulated policy: "
+            f"{policy_rows[0]['mode']} {policy_rows[0]['signal']} >= {policy_rows[0]['threshold']} "
+            f"speedup={policy_rows[0]['speedup']:.3f}x "
+            f"cos={policy_rows[0]['mean_output_cosine']:.6f} "
+            f"false_skip={policy_rows[0]['false_skip_count']}"
+        )
 
 
 if __name__ == "__main__":
