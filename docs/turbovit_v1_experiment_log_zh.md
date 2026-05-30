@@ -615,3 +615,232 @@ actual hash: e3b0c442...
   - 更长视频序列；
   - 多 seed / 多片段统计；
   - v2 routing signal 从 patch MSE 升级为 low-layer feature drift 或 dual-anchor drift。
+
+## 预训练 CLIP ViT-L/14 实验
+
+目标：
+
+- 从随机初始化的 torchvision ViT，推进到真实预训练 vision encoder。
+- 使用远程已有模型 `/home/mllm/models/clip-vit-large-patch14-336`。
+- 验证 v1/v2 在预训练 CLIP ViT-L/14 上是否仍成立。
+
+模型配置：
+
+```text
+backbone: HuggingFace CLIPVisionModel
+model path: /home/mllm/models/clip-vit-large-patch14-336
+image_size: 336
+patch_size: 14
+hidden_size: 1024
+num_layers: 24
+num_heads: 16
+device: A100 cuda
+```
+
+实现：
+
+- 新增 `HFCLIPVisionWrapper`。
+- 将 CLIP 的 `CLIPEncoderLayer` 适配到已有 sparse 接口：
+  - `layer_norm1 -> norm1`
+  - `self_attn.q_proj/k_proj/v_proj -> _project_qkv`
+  - `self_attn.out_proj -> attn.out_proj`
+  - `layer_norm2 -> norm2`
+  - `mlp -> mlp`
+- `run_synthetic_vit_turbo.py` 和 `run_synthetic_vit_v2.py` 新增 `--backbone clip` 和 `--model-path`。
+
+### Step 1：CLIP ViT-L/14 Turbo-v1
+
+命令：
+
+```bash
+CUDA_VISIBLE_DEVICES=0 /root/miniconda3/bin/conda run -n base \
+  python -m experiments.turbovit_v1.scripts.run_synthetic_vit_turbo \
+  --backbone clip \
+  --model-path /home/mllm/models/clip-vit-large-patch14-336 \
+  --output-dir results/turbovit_v1/clip_vit_v1_gpu_24f \
+  --num-frames 24 \
+  --refresh-interval 4 \
+  --dynamic-ratios 0.25,0.5,0.75 \
+  --device cuda
+```
+
+结果：
+
+```text
+dense latency/frame: 38.633 ms
+
+r=0.25:
+  turbo latency/frame: 26.418 ms
+  speedup: 1.462x
+  cosine: 0.977407
+  mse: 0.058597
+
+r=0.50:
+  turbo latency/frame: 29.594 ms
+  speedup: 1.305x
+  cosine: 0.986267
+  mse: 0.035599
+
+r=0.75:
+  turbo latency/frame: 32.480 ms
+  speedup: 1.189x
+  cosine: 0.994333
+  mse: 0.014774
+```
+
+分析：
+
+- 与 torchvision ViT-B/16 不同，CLIP ViT-L/14 足够大，v1 的 token sparse 已经能带来正向加速。
+- 但速度/保真度权衡明显：
+  - `r=0.25` 加速最高，但 cosine 只有 `0.977`；
+  - `r=0.75` 保真度较好，但加速降到 `1.19x`。
+- 这说明对于大视觉编码器，token-level sparse 有价值，但固定比例更新仍不是最优策略。
+
+### Step 2：CLIP ViT-L/14 Turbo-v2 threshold sweep
+
+命令：
+
+```bash
+CUDA_VISIBLE_DEVICES=0 /root/miniconda3/bin/conda run -n base \
+  python -m experiments.turbovit_v1.scripts.run_synthetic_vit_v2 \
+  --backbone clip \
+  --model-path /home/mllm/models/clip-vit-large-patch14-336 \
+  --output-dir results/turbovit_v1/clip_vit_v2_gpu_96f \
+  --num-frames 96 \
+  --refresh-interval 4 \
+  --dynamic-ratio 0.75 \
+  --skip-thresholds 0.0005,0.001,0.0011,0.0012 \
+  --dense-threshold 0.006 \
+  --device cuda
+```
+
+结果：
+
+```text
+dense latency/frame: 37.796 ms
+
+skip=0.0005:
+  turbo latency/frame: 17.016 ms
+  speedup: 2.221x
+  cosine: 0.994853
+  dense/sparse/skip: 24/23/49
+
+skip=0.0010:
+  turbo latency/frame: 13.510 ms
+  speedup: 2.798x
+  cosine: 0.992097
+  dense/sparse/skip: 24/12/60
+
+skip=0.0011:
+  turbo latency/frame: 12.551 ms
+  speedup: 3.011x
+  cosine: 0.991094
+  dense/sparse/skip: 24/9/63
+
+skip=0.0012:
+  turbo latency/frame: 12.254 ms
+  speedup: 3.084x
+  cosine: 0.990815
+  dense/sparse/skip: 24/8/64
+```
+
+分析：
+
+- v2 在预训练 CLIP ViT-L/14 上显著优于 v1。
+- 当 `skip_threshold=0.001` 时，已经可以达到 `2.80x`，同时 cosine 仍保持 `0.992`。
+- 更激进的 `skip=0.0012` 可达到 `3.08x`，但 cosine 降到 `0.991`。
+- 这组结果是目前最接近论文主线的证据：先做帧级 routing，再条件触发 token sparse，比逐帧逐层 token sparse 更有效。
+
+### Step 3：CLIP ViT-L/14 refresh interval sweep
+
+固定配置：
+
+```text
+dynamic_ratio: 0.75
+skip_threshold: 0.001
+dense_threshold: 0.006
+num_frames: 96
+```
+
+结果：
+
+```text
+N=2:
+  speedup: 1.882x
+  cosine: 0.995848
+  mse: 0.010719
+  dense/sparse/skip: 48/3/45
+
+N=4:
+  speedup: 2.797x
+  cosine: 0.992097
+  mse: 0.020378
+  dense/sparse/skip: 24/12/60
+
+N=8:
+  speedup: 3.432x
+  cosine: 0.986977
+  mse: 0.033537
+  dense/sparse/skip: 12/19/65
+```
+
+分析：
+
+- 刷新间隔越大，dense reference 帧越少，因此速度上升。
+- 但 reference stale 问题也更明显，cosine 从 `0.996` 降到 `0.987`。
+- 这正好支撑下一阶段的研究动机：单锚点 reference 不足，需要 dual-anchor 或 rolling-anchor correction。
+
+### Step 4：CLIP ViT-L/14 dynamic ratio sweep under v2
+
+固定配置：
+
+```text
+refresh_interval: 4
+skip_threshold: 0.001
+dense_threshold: 0.006
+num_frames: 96
+```
+
+结果：
+
+```text
+r=0.25:
+  speedup: 3.029x
+  cosine: 0.989137
+  mse: 0.027976
+  dense/sparse/skip: 24/12/60
+
+r=0.50:
+  speedup: 2.907x
+  cosine: 0.990361
+  mse: 0.024837
+  dense/sparse/skip: 24/12/60
+
+r=0.75:
+  speedup: 2.796x
+  cosine: 0.992097
+  mse: 0.020378
+  dense/sparse/skip: 24/12/60
+```
+
+分析：
+
+- 在 v2 下，dynamic ratio 只影响进入 sparse 分支的帧，不影响 skip/dense 分布。
+- 降低 ratio 可以进一步提速，但保真度会下降。
+- 当前更关键的变量仍是 routing 分布；一旦 skip 帧占比较高，dynamic ratio 的影响会弱于 refresh interval 和 skip threshold。
+
+### 本轮 CLIP 结论
+
+- 预训练 CLIP ViT-L/14 上，v1 已经能加速，但上限有限，且存在明显保真度损失。
+- v2 routing 是当前最有潜力的方向：在 96 帧 synthetic streaming 上达到 `2.8x - 3.1x`，且 cosine 约 `0.991 - 0.992`。
+- refresh interval sweep 清楚暴露 stale reference 问题，为 dual-anchor 提供直接实验动机。
+- dynamic ratio sweep 说明 token 更新比例是二级旋钮，routing 策略是一级旋钮。
+
+下一步：
+
+- 接入真实视频解码，使用真实视频帧替代 synthetic frames。
+- 在 CLIP ViT-L/14 上跑多视频、多 seed 统计。
+- 实现 dual-anchor v3：
+  - 短期 rolling anchor 处理局部连续性；
+  - 长期 key anchor 防止语义漂移；
+  - 对中间帧使用双锚点 drift 或插值判别。

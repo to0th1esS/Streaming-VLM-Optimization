@@ -7,7 +7,6 @@ from experiments.turbovit_v1.data.synthetic_stream import SyntheticVideoConfig, 
 from experiments.turbovit_v1.eval.fidelity import compare_outputs
 from experiments.turbovit_v1.methods.dense_vit import encode_stream_dense
 from experiments.turbovit_v1.methods.turbovit_v2 import encode_stream_turbovit_v2
-from experiments.turbovit_v1.models.hf_clip_vit import HFCLIPVisionWrapper
 from experiments.turbovit_v1.models.torchvision_vit import TorchvisionViTWrapper
 from experiments.turbovit_v1.utils.io import write_csv, write_json
 
@@ -48,11 +47,15 @@ def main():
     output_dir = Path(args.output_dir)
 
     if args.backbone == "clip":
+        from experiments.turbovit_v1.models.hf_clip_vit import HFCLIPVisionWrapper
+
         model = HFCLIPVisionWrapper(args.model_path).to(device)
         model_name = "hf_clip_vision"
+        weights_name = "local_pretrained"
     else:
         model = TorchvisionViTWrapper(weights=args.weights).to(device)
         model_name = "torchvision.vit_b_16"
+        weights_name = args.weights
     video = make_redundant_video(
         SyntheticVideoConfig(
             num_frames=args.num_frames,
@@ -133,7 +136,7 @@ def main():
         "model": model_name,
         "backbone": args.backbone,
         "model_path": args.model_path if args.backbone == "clip" else "",
-        "weights": args.weights,
+        "weights": weights_name,
         "device": str(device),
         "torch_version": torch.__version__,
         "cuda_name": torch.cuda.get_device_name(0) if device.type == "cuda" else "",
@@ -149,7 +152,7 @@ def main():
     write_csv(output_dir / "summary.csv", summary_rows)
     write_csv(output_dir / "dense_latency.csv", dense_latency_rows)
 
-    print("Synthetic torchvision ViT Turbo-v2 sweep completed")
+    print("Synthetic ViT Turbo-v2 sweep completed")
     print(f"summary: {output_dir / 'synthetic_vit_v2_summary.json'}")
     for row in summary_rows:
         print(
