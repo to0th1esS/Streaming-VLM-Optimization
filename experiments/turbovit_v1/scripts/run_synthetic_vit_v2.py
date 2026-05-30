@@ -7,12 +7,15 @@ from experiments.turbovit_v1.data.synthetic_stream import SyntheticVideoConfig, 
 from experiments.turbovit_v1.eval.fidelity import compare_outputs
 from experiments.turbovit_v1.methods.dense_vit import encode_stream_dense
 from experiments.turbovit_v1.methods.turbovit_v2 import encode_stream_turbovit_v2
+from experiments.turbovit_v1.models.hf_clip_vit import HFCLIPVisionWrapper
 from experiments.turbovit_v1.models.torchvision_vit import TorchvisionViTWrapper
 from experiments.turbovit_v1.utils.io import write_csv, write_json
 
 
 def parse_args():
     parser = argparse.ArgumentParser(description="Run synthetic Turbo-ViT-v2 routing sweep on torchvision ViT-B/16.")
+    parser.add_argument("--backbone", default="torchvision", choices=["torchvision", "clip"])
+    parser.add_argument("--model-path", default="/home/mllm/models/clip-vit-large-patch14-336")
     parser.add_argument("--output-dir", default="results/turbovit_v1/synthetic_vit_v2")
     parser.add_argument("--weights", default="none", choices=["none", "imagenet"])
     parser.add_argument("--num-frames", type=int, default=24)
@@ -44,7 +47,12 @@ def main():
     device = resolve_device(args.device)
     output_dir = Path(args.output_dir)
 
-    model = TorchvisionViTWrapper(weights=args.weights).to(device)
+    if args.backbone == "clip":
+        model = HFCLIPVisionWrapper(args.model_path).to(device)
+        model_name = "hf_clip_vision"
+    else:
+        model = TorchvisionViTWrapper(weights=args.weights).to(device)
+        model_name = "torchvision.vit_b_16"
     video = make_redundant_video(
         SyntheticVideoConfig(
             num_frames=args.num_frames,
@@ -122,7 +130,9 @@ def main():
 
     summary = {
         "experiment": "synthetic_torchvision_vit_turbo_v2",
-        "model": "torchvision.vit_b_16",
+        "model": model_name,
+        "backbone": args.backbone,
+        "model_path": args.model_path if args.backbone == "clip" else "",
         "weights": args.weights,
         "device": str(device),
         "torch_version": torch.__version__,
