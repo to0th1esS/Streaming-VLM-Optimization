@@ -844,3 +844,271 @@ r=0.75:
   - 短期 rolling anchor 处理局部连续性；
   - 长期 key anchor 防止语义漂移；
   - 对中间帧使用双锚点 drift 或插值判别。
+
+## v3 Analysis：真实视频 failure mode 与 routing signal 分析
+
+目标：
+
+- 不急着实现最终 v3 加速算法，先做顶会论文所需的 failure mode 分析。
+- 在真实视频上逐帧记录：
+  - patch embedding drift；
+  - low/mid/deep layer cosine；
+  - dense/sparse/skip 决策；
+  - final output cosine/MSE；
+  - false skip；
+  - signal 与 final error 的相关性。
+- 用这些结果回答：为什么 synthetic 上 v2 很好，但真实视频上会失效；接下来应优化哪一部分。
+
+新增脚本：
+
+```text
+experiments/turbovit_v1/scripts/run_v3_analysis.py
+scripts/run_v3_analysis_local.ps1
+```
+
+输出文件：
+
+```text
+v3_analysis_summary.json
+frame_analysis.csv
+signal_correlations.csv
+decision_summary.csv
+false_skip.csv
+policy_simulation.csv
+timeline_output_cosine.svg
+timeline_patch_drift.svg
+scatter_patch_drift_vs_error.svg
+scatter_best_signal_vs_error.svg
+```
+
+### Step 1：真实视频，frame_stride = 4
+
+命令：
+
+```bash
+CUDA_VISIBLE_DEVICES=0 /root/miniconda3/bin/conda run -n base \
+  python -m experiments.turbovit_v1.scripts.run_v3_analysis \
+  --backbone clip \
+  --model-path /home/mllm/models/clip-vit-large-patch14-336 \
+  --video-source real \
+  --video-path data/turbovit_v1/big_buck_bunny.mp4 \
+  --output-dir results/turbovit_v1/clip_v3_analysis_real_48f \
+  --num-frames 48 \
+  --frame-stride 4 \
+  --refresh-interval 4 \
+  --dynamic-ratio 0.75 \
+  --skip-threshold 0.001 \
+  --dense-threshold 0.006 \
+  --false-skip-cosine 0.99 \
+  --device cuda
+```
+
+结果：
+
+```text
+dense latency/frame: 38.020 ms
+turbo latency/frame: 38.802 ms
+speedup: 0.980x
+mean output cosine: 0.988983
+false skip count: 0
+
+decision distribution:
+dense:  41 frames, cosine 1.0000
+sparse: 7 frames,  cosine 0.9243
+skip:   0 frames
+```
+
+分析：
+
+- `frame_stride=4` 对真实视频来说跨度过大，patch drift 经常超过 `dense_threshold`，导致 routing 大量回退到 dense。
+- 少数 sparse 帧的质量很差，mean cosine 只有 `0.924`。
+- 这说明 synthetic 结果不能直接代表真实视频；真实视频中运动、光照、局部语义变化会显著放大 drift。
+- 当前 v2 在该设置下不是有效加速方案。
+
+signal 相关性：
+
+```text
+best signal: layer11_cos_to_long
+pearson with final_error: -0.9946
+
+patch_mse_to_rolling corr: -0.1033
+patch_mse_to_long corr:    -0.0962
+```
+
+结论：
+
+- patch embedding MSE 几乎不能预测最终误差。
+- 中深层 feature cosine 与最终误差高度相关。
+- v3 的 routing signal 不能继续只依赖 patch MSE。
+
+### Step 2：真实视频逐帧输入，frame_stride = 1
+
+命令：
+
+```bash
+CUDA_VISIBLE_DEVICES=0 /root/miniconda3/bin/conda run -n base \
+  python -m experiments.turbovit_v1.scripts.run_v3_analysis \
+  --backbone clip \
+  --model-path /home/mllm/models/clip-vit-large-patch14-336 \
+  --video-source real \
+  --video-path data/turbovit_v1/big_buck_bunny.mp4 \
+  --output-dir results/turbovit_v1/clip_v3_analysis_real_48f_stride1 \
+  --num-frames 48 \
+  --frame-stride 1 \
+  --refresh-interval 4 \
+  --dynamic-ratio 0.75 \
+  --skip-threshold 0.001 \
+  --dense-threshold 0.006 \
+  --false-skip-cosine 0.99 \
+  --device cuda
+```
+
+结果：
+
+```text
+dense latency/frame: 37.960 ms
+turbo latency/frame: 28.471 ms
+speedup: 1.333x
+mean output cosine: 0.943008
+false skip count: 9
+
+decision distribution:
+dense:  13 frames, cosine 1.0000
+sparse: 24 frames, cosine 0.9633
+skip:   11 frames, cosine 0.8314
+```
+
+分析：
+
+- 逐帧输入确实带来了更多 reuse 机会，因此速度提升到 `1.33x`。
+- 但质量明显不够，尤其 skip 分支严重误判。
+- false skip 说明 patch drift 小不代表语义/深层特征稳定。
+- 真实视频中的一些帧 patch MSE 低于阈值，但 final output cosine 只有 `0.73 - 0.82`。
+
+signal 相关性：
+
+```text
+layer5_cos_to_long corr:  -0.7774
+layer11_cos_to_long corr: -0.7663
+final/output cosine to long corr: -0.7433
+
+patch_mse_to_rolling corr: -0.1048
+patch_mse_to_long corr:    -0.1210
+```
+
+结论：
+
+- 中层特征比 patch MSE 更适合作为 skip confirmation。
+- 单纯 patch-MSE routing 会把一些运动/语义变化明显的帧误判为可 skip。
+- v3 需要 feature-aware routing，而不是只调 threshold。
+
+### Step 3：feature gate policy simulation
+
+新增输出：
+
+```text
+policy_simulation.csv
+best_policy_simulation.json
+```
+
+模拟方式：
+
+- 基于真实逐帧分析结果，离线模拟：
+  - `gate_skip_to_dense`：如果 skip 帧的 layer cosine 低于阈值，则改为 dense；
+  - `gate_reuse_to_dense`：如果 skip/sparse 帧的 layer cosine 低于阈值，则改为 dense。
+- 这是上界分析，不代表当前实际 runtime，因为 layer feature 是 dense oracle 得到的。
+- 目的不是报告最终性能，而是验证“加 feature gate 是否能消除 false skip”。
+
+关键结果：
+
+```text
+gate_skip_to_dense, layer11_cos_to_long >= 0.999:
+  speedup: 1.100x
+  mean cosine: 0.9816
+  false skip: 0
+
+gate_reuse_to_dense, layer11_cos_to_long >= 0.999:
+  speedup: 1.043x
+  mean cosine: 0.99997
+  false skip: 0
+```
+
+分析：
+
+- feature gate 可以消除 false skip，但会牺牲大量速度。
+- 如果只 gate skip，仍保留 sparse 分支，mean cosine 只有 `0.982`，说明 sparse 分支本身也需要改进。
+- 如果 gate skip+sparse，质量几乎恢复 dense，但速度只剩 `1.04x`，说明直接用深层 feature gate 的成本/保守性太高。
+- 这支持一个重要研究判断：v3 不能只是“加一个更深层阈值”，而要设计低成本、渐进式、双锚点的 routing。
+
+### Step 4：真实视频 sparse 分支 dynamic ratio 分析
+
+设置：
+
+```text
+frame_stride: 1
+refresh_interval: 4
+skip_threshold: 0.0001
+dense_threshold: 0.006
+num_frames: 48
+```
+
+结果：
+
+```text
+r=0.75:
+  speedup: 1.131x
+  mean cosine: 0.975341
+  false skip: 0
+  dense/sparse/skip: 13/33/2
+  sparse cosine: 0.9642
+
+r=0.90:
+  speedup: 1.021x
+  mean cosine: 0.989725
+  false skip: 0
+  dense/sparse/skip: 13/33/2
+  sparse cosine: 0.9851
+
+r=1.00:
+  speedup: 1.016x
+  mean cosine: 0.999988
+  false skip: 0
+  dense/sparse/skip: 13/33/2
+  sparse cosine: 1.0000
+```
+
+分析：
+
+- 提高 dynamic ratio 能恢复 sparse 分支质量。
+- `r=0.9` 接近可用，但速度收益几乎消失。
+- `r=1.0` 验证 sparse 实现正确，输出几乎等于 dense，但这已经不是真正稀疏加速。
+- 说明真实视频上不能依赖固定比例 token update，必须做 adaptive token selection 或 layer-wise update。
+
+### 本轮真实视频结论
+
+1. Synthetic 上成立的 patch-MSE routing，在真实视频上明显不够可靠。
+2. 真实视频中，patch MSE 与最终误差相关性很低。
+3. 中层/深层 feature cosine 对最终误差预测更强。
+4. skip 分支是速度来源，但也是主要风险来源。
+5. sparse 分支在 `r=0.75` 下质量不够；提高到 `r=0.9` 质量接近可用但速度收益很小。
+6. v3 的核心不应是单纯调阈值，而应是：
+   - dual-anchor；
+   - feature-aware routing；
+   - adaptive ratio；
+   - 对 skip 和 sparse 分支分别设置更严格的进入条件。
+
+下一步优化方向：
+
+- 实现 v3 dual-anchor analysis：
+  - long anchor：最近 dense keyframe；
+  - rolling anchor：最近 accepted output；
+  - candidate skip 必须同时满足 rolling drift 和 long-anchor feature consistency。
+- 实现 low-cost staged routing：
+  - Stage 0：patch MSE 快速过滤明显 dense 帧；
+  - Stage 1：只对候选 skip 帧计算前 K 层 feature gate；
+  - Stage 2：不确定帧进入 sparse；
+  - Stage 3：高风险帧 dense refresh。
+- 实现 adaptive dynamic ratio：
+  - drift 越大，ratio 越高；
+  - 靠近 reference 的帧允许更低 ratio；
+  - 高风险层使用更高 ratio。
