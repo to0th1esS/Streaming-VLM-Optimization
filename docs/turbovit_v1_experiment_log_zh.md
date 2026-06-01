@@ -1112,3 +1112,232 @@ r=1.00:
   - drift 越大，ratio 越高；
   - 靠近 reference 的帧允许更低 ratio；
   - 高风险层使用更高 ratio。
+
+## v3 Staged Routing 在线原型
+
+目标：
+
+- 将上一节的离线 `policy_simulation` 推进到真实 runtime 原型。
+- 不再使用 dense oracle 的 layer feature，而是在在线推理中只对候选 skip 帧额外跑前 K 层 feature gate。
+- 验证三个问题：
+  1. feature gate 能否减少真实视频 false skip；
+  2. gate 的额外耗时是否可接受；
+  3. sparse 分支是否仍是质量/速度瓶颈。
+
+新增实现：
+
+```text
+experiments/turbovit_v1/methods/turbovit_v3.py
+experiments/turbovit_v1/scripts/run_turbovit_v3.py
+scripts/run_turbovit_v3_local.ps1
+```
+
+在线 routing 逻辑：
+
+```text
+1. forced reference 或 patch_mse >= dense_threshold:
+   -> dense
+
+2. patch_mse <= skip_threshold:
+   -> 先运行前 K 层 feature gate
+   -> 如果 gate feature 同时接近 rolling anchor 和 long anchor:
+      -> skip
+   -> 否则:
+      -> gate_dense
+
+3. 中间 drift:
+   -> sparse update
+```
+
+工程修正：
+
+- 初版 gate 失败后会重新从头 dense，造成重复计算。
+- 已修正为：gate 失败时从 gate layer 之后继续前向，复用已经算过的前 K 层。
+- 新增 feature gate warmup，降低首次路径计时污染。
+
+### Step 1：固定 ratio，扫 feature gate threshold
+
+设置：
+
+```text
+backbone: CLIP ViT-L/14
+video: Big Buck Bunny
+num_frames: 48
+frame_stride: 1
+refresh_interval: 4
+dynamic_ratio: 0.9
+skip_threshold: 0.001
+dense_threshold: 0.006
+feature_gate_layer: 5
+```
+
+结果：
+
+```text
+feature_skip_threshold=0.98:
+  speedup: 0.968x
+  mean cosine: 0.989705
+  false skip: 2
+
+feature_skip_threshold=0.99:
+  speedup: 0.953x
+  mean cosine: 0.995353
+  false skip: 1
+
+feature_skip_threshold=0.999:
+  speedup: 0.948x
+  mean cosine: 0.995353
+  false skip: 1
+```
+
+分析：
+
+- 在线 feature gate 明显提升质量，但初版低于 dense。
+- 主要原因是 gate 失败后重复计算前 K 层。
+
+### Step 2：复用 gate prefix 后的结果
+
+设置：
+
+```text
+dynamic_ratio: 0.9
+skip_threshold: 0.001
+dense_threshold: 0.006
+```
+
+结果：
+
+```text
+gate_layer=5, threshold=0.99:
+  speedup: 1.020x
+  mean cosine: 0.995353
+  false skip: 1
+  dense/gate_dense/skip/sparse: 13/13/3/19
+
+gate_layer=2, threshold=0.9995:
+  speedup: 1.027x
+  mean cosine: 0.995353
+  false skip: 1
+  dense/gate_dense/skip/sparse: 13/13/3/19
+
+gate_layer=0, threshold=0.9999:
+  speedup: 1.006x
+  mean cosine: 0.995801
+  false skip: 0
+  dense/gate_dense/skip/sparse: 13/15/2/18
+```
+
+分析：
+
+- 复用 gate prefix 后，v3 从低于 dense 变为略高于 dense。
+- 更浅的 gate layer 可以降低 `gate_dense` 成本。
+- `gate_layer=0` 可以消除 false skip，但更保守，skip 更少，速度下降。
+- 当前在线 v3 的主要瓶颈不是 gate 本身，而是：
+  - skip 帧太少；
+  - sparse 帧仍接近 dense 耗时；
+  - 为了保证质量需要较高 dynamic ratio。
+
+### Step 3：固定 gate，扫 ratio 和 skip threshold
+
+设置：
+
+```text
+feature_gate_layer: 2
+feature_skip_threshold: 0.9995
+dense_threshold: 0.006
+```
+
+结果：
+
+```text
+r=0.75, skip=0.001:
+  speedup: 1.087x
+  mean cosine: 0.988549
+  false skip: 1
+  dense/gate_dense/skip/sparse: 13/13/3/19
+
+r=0.75, skip=0.0005:
+  speedup: 1.151x
+  mean cosine: 0.974874
+  false skip: 1
+  dense/skip/sparse: 13/3/32
+
+r=0.90, skip=0.0005:
+  speedup: 1.040x
+  mean cosine: 0.989307
+  false skip: 1
+  dense/skip/sparse: 13/3/32
+```
+
+分析：
+
+- 降低 ratio 可以提升速度，但 sparse 质量下降明显。
+- 降低 skip threshold 后，更多帧进入 sparse 而不是 gate_dense，速度上升但质量下降。
+- `r=0.75, skip=0.001` 是当前较好的折中点，但 cosine 仍低于理想论文主结果。
+
+### Step 4：adaptive dynamic ratio
+
+实现：
+
+```text
+sparse_dynamic_ratio =
+  dynamic_ratio_min + alpha * (dynamic_ratio_max - dynamic_ratio_min)
+
+alpha = clamp((frame_drift - skip_threshold) / (dense_threshold - skip_threshold), 0, 1)
+```
+
+设置与结果：
+
+```text
+gate_layer=2, ratio 0.75 -> 0.95, skip=0.0005:
+  speedup: 1.106x
+  mean cosine: 0.978085
+  false skip: 1
+
+gate_layer=2, ratio 0.75 -> 1.00, skip=0.0005:
+  speedup: 1.104x
+  mean cosine: 0.978532
+  false skip: 1
+
+gate_layer=2, ratio 0.75 -> 0.95, skip=0.001:
+  speedup: 1.065x
+  mean cosine: 0.990499
+  false skip: 1
+
+gate_layer=0, ratio 0.75 -> 0.95, skip=0.001:
+  speedup: 1.043x
+  mean cosine: 0.990965
+  false skip: 0
+```
+
+分析：
+
+- adaptive ratio 方向是合理的，但当前线性映射提升有限。
+- 原因是大多数 sparse 帧的 patch drift 数值不高，映射后的 ratio 仍接近下界。
+- 这再次说明 patch drift 不是足够好的 ratio 控制信号。
+- 要让 adaptive ratio 真正有效，应该用 feature drift 或 token-level drift 来调节 ratio。
+
+### 本轮 v3 在线原型结论
+
+1. 在线 feature gate 能显著减少 false skip。
+2. gate prefix 复用是必要工程优化，否则 gate 会直接吃掉收益。
+3. 真实视频上当前 v3 最好只是小幅超过 dense，约 `1.04x - 1.09x`，质量较稳。
+4. 若追求更高速度，固定低 ratio sparse 会带来明显质量下降。
+5. 当前最核心瓶颈已经明确：
+   - skip 机会不足；
+   - sparse 分支性价比不足；
+   - patch drift 不能很好控制 skip 和 dynamic ratio。
+
+下一步研究重点：
+
+- 不再单纯调全局 threshold。
+- 做 feature-aware adaptive ratio：
+  - 用 low/mid-layer token drift 而不是 patch MSE 决定 ratio；
+  - 对高风险层或高风险 token 自动提高 ratio；
+  - 对背景/稳定 token 使用更低 ratio。
+- 做 dual-anchor sparse：
+  - sparse token 不只复用 long/rolling 的单一状态；
+  - 根据 long/rolling 一致性选择复用来源或插值。
+- 做真实视频多片段统计：
+  - 当前 Big Buck Bunny 单片段有明显场景依赖；
+  - 需要静态镜头、缓慢运动、快速运动、镜头切换、小目标运动五类子集。
