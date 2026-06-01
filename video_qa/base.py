@@ -200,6 +200,7 @@ def work(QA_CLASS):
     parser.add_argument("--vit_cache_interval", type=int, default=2)
     parser.add_argument("--vit_update_token_ratio", type=float, default=0.25)
     parser.add_argument("--enable_semantic_stream", type=str2bool, nargs='?', const=True, default=False)
+    parser.add_argument("--enable_semantic_compute_gate", type=str2bool, nargs='?', const=True, default=False)
     parser.add_argument("--semantic_refresh_interval", type=int, default=4)
     parser.add_argument("--semantic_skip_threshold", type=float, default=0.01)
     parser.add_argument("--debug", type=str2bool, nargs='?', const=True, default=True)
@@ -233,6 +234,7 @@ def work(QA_CLASS):
                     "cache_interval": args.vit_cache_interval,
                     "update_token_ratio": args.vit_update_token_ratio,
                     "enable_semantic_stream": args.enable_semantic_stream,
+                    "enable_semantic_compute_gate": args.enable_semantic_compute_gate,
                     "semantic_refresh_interval": args.semantic_refresh_interval,
                     "semantic_skip_threshold": args.semantic_skip_threshold,
                 },

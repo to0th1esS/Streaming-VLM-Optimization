@@ -49,22 +49,9 @@ class SemanticStreamGate:
             return False, drift, "skip"
         return True, drift, "drift_keep"
 
-    @torch.no_grad()
-    def __call__(
-        self,
-        video_features: torch.Tensor,
-        selected_video_feature: torch.Tensor,
-        **kwargs,
-    ) -> torch.Tensor:
-        batch_size = int(kwargs.get("batch_size", 1))
-        if batch_size != 1:
-            return video_features
-
-        signatures = self._frame_signature(selected_video_feature)
+    def select_indices_from_signatures(self, signatures: torch.Tensor, token_count: int) -> torch.Tensor:
         keep_indices = []
-        token_count = int(video_features.shape[1]) if video_features.ndim == 3 else 0
-
-        for local_idx in range(video_features.shape[0]):
+        for local_idx in range(signatures.shape[0]):
             keep, drift, decision = self._should_keep(signatures[local_idx : local_idx + 1])
             self.stats["input_frames"] += 1
             self.stats["input_tokens"] += token_count
@@ -85,7 +72,22 @@ class SemanticStreamGate:
             )
             self.frame_idx += 1
 
-        if not keep_indices:
+        return torch.tensor(keep_indices, device=signatures.device, dtype=torch.long)
+
+    @torch.no_grad()
+    def __call__(
+        self,
+        video_features: torch.Tensor,
+        selected_video_feature: torch.Tensor,
+        **kwargs,
+    ) -> torch.Tensor:
+        batch_size = int(kwargs.get("batch_size", 1))
+        if batch_size != 1:
+            return video_features
+
+        signatures = self._frame_signature(selected_video_feature)
+        token_count = int(video_features.shape[1]) if video_features.ndim == 3 else 0
+        keep_tensor = self.select_indices_from_signatures(signatures, token_count)
+        if keep_tensor.numel() == 0:
             return video_features[:0]
-        keep_tensor = torch.tensor(keep_indices, device=video_features.device)
         return video_features.index_select(0, keep_tensor)
