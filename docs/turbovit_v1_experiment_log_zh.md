@@ -1932,3 +1932,149 @@ Dual-Anchor Semantic Stability Guided Token Reuse
 - segment 合并提供 GPU 友好的连续执行；
 - segment 长度可自适应，不被固定正方形 block 限制；
 - 论文表述也更优雅：从 semantic stability 到 reusable visual segments。
+
+## 2026-06-01：v7 Adaptive Segment-Aware Reuse
+
+### 目的
+
+v6 的负结果说明，固定空间块不是足够优雅的最终形态。它改变了选择粒度，但没有解决两个问题：
+
+1. 固定正方形 block 会浪费动态 token budget；
+2. 后端仍然是离散 token gather/scatter，没有真正变成连续执行。
+
+v7 改为更自然的 adaptive segment：
+
+```text
+保留 token-level semantic stability 的精细判断，
+再把相邻动态 token 合并成少量连续 segment。
+```
+
+这一步的论文动机更清晰：
+
+```text
+语义稳定性决定哪些视觉 token 需要更新；
+视觉连续性把这些 token 组织成可执行片段；
+最终目标是从 token reuse 走向 visual segment reuse。
+```
+
+### 方法
+
+v7 仍然使用 v5 的 dual-anchor stability：
+
+```text
+stability_i = min(sim_i_to_rolling, sim_i_to_long)
+```
+
+之后：
+
+- 先按 token stability 选择最低的一批候选动态 patch；
+- 在每一行 patch grid 内，把相邻候选 token 合并为 segment；
+- 允许填补长度不超过 `segment_max_gap` 的小间隙；
+- 允许把过短 segment 扩展到 `min_segment_len`；
+- CLS token 始终重算；
+- 静态 token 仍按 rolling/long 更接近的一侧复用。
+
+### 实验设置
+
+```text
+model: CLIP ViT-L/14@336
+video: Big Buck Bunny real video
+num_frames: 96
+frame_stride: 1
+refresh_interval: 16
+probe_layer: 2
+anchor_mode: dual
+device: remote A100
+```
+
+### 高保真配置：ratio 0.80 -> 1.00
+
+| method | segment config | speedup | mean cosine | min cosine | p10 cosine | false skip |
+| --- | --- | ---: | ---: | ---: | ---: | ---: |
+| v5 token top-k | - | 1.033x | 0.992580 | 0.943300 | 0.976184 | 0 |
+| v7 segment | gap=1, min_len=2 | 1.000x | 0.994970 | 0.950907 | 0.986075 | 0 |
+
+v7 明显提升了保真度：
+
+```text
+mean cosine: 0.992580 -> 0.994970
+min cosine:  0.943300 -> 0.950907
+p10 cosine:  0.976184 -> 0.986075
+```
+
+但速度下降到接近 dense，说明当前实现仍然不是最终高效形态。
+
+### 激进配置：ratio 0.60 -> 0.95
+
+| method | segment config | speedup | mean cosine | min cosine | p10 cosine | false skip |
+| --- | --- | ---: | ---: | ---: | ---: | ---: |
+| v5 token top-k | - | 1.081x | 0.983931 | 0.911828 | 0.949083 | 0 |
+| v7 segment | gap=1, min_len=2 | 1.034x | 0.989186 | 0.920362 | 0.968506 | 0 |
+| v7 segment | gap=1, min_len=1 | 1.031x | 0.987762 | 0.919364 | 0.964808 | 0 |
+| v7 segment | gap=0, min_len=2 | 1.046x | 0.987391 | 0.913890 | 0.962776 | 0 |
+
+激进配置下，v7 的结论更清楚：
+
+- 速度不如 v5；
+- 但质量显著高于 v5；
+- 尤其 p10 cosine 从 0.949 提升到 0.969。
+
+也就是说，segment 化不是当前工程实现里的速度收益来源，而是质量稳定性来源。
+
+### Segment 统计
+
+典型 sparse 帧统计：
+
+```text
+ratio 0.80->1.00, gap=1, min_len=2:
+  mean segment count: 31.7
+  mean segment length: 17.36
+  expansion ratio: 1.027
+
+ratio 0.60->0.95, gap=1, min_len=2:
+  mean segment count: 40.38
+  mean segment length: 12.25
+  expansion ratio: 1.053
+
+ratio 0.60->0.95, gap=0, min_len=2:
+  mean segment count: 58.34
+  mean segment length: 8.58
+  expansion ratio: 1.027
+```
+
+这说明动态 token 在真实视频中确实可以被组织成连续片段，但片段数量仍然不少。
+
+### 阶段性结论
+
+v7 给出了一个比 v6 更有论文价值的 insight：
+
+```text
+Token-level semantic stability 应该保留；
+但执行上不应该直接处理孤立 token。
+更合理的中间表示是 semantic visual segments。
+```
+
+但目前 v7 仍然没有突破速度边界，因为它只是在选择后生成 segment，真正的 sparse compute 仍复用 v5 的 gather/scatter 实现。
+
+因此，“前端 ViT-only 优化”已经基本触摸到当前原型边界：
+
+1. 判别开销已经很低；
+2. 加大 refresh interval 收益有限；
+3. dual-anchor 提升稳定性，但不是速度主来源；
+4. segment 能提升质量，但当前后端没有利用连续性；
+5. 真正的速度突破需要联合执行设计，而不是继续换 selector。
+
+下一步应该从两个方向合并推进：
+
+```text
+ViT side:  segment-aware sparse execution
+LLM side:  REKV-style streaming cache management
+```
+
+也就是说，后续不应只问“ViT 编码快了多少”，而应问：
+
+```text
+当前帧哪些视觉 segment 真的需要进入 LLM cache？
+哪些 segment 可以只更新 ViT 表征但不触发长期 KV 写入？
+哪些稳定 segment 可以沿用旧视觉 token 与旧语言 KV？
+```
