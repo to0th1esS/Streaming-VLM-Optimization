@@ -93,6 +93,7 @@ def encode_stream_turbovit_v3(
 
     for frame_idx in range(min(warmup_frames, video.shape[0])):
         model.forward_with_caches(video[frame_idx : frame_idx + 1])
+        _forward_to_gate(model, video[frame_idx : frame_idx + 1], feature_gate_layer)
     _synchronize_if_needed(device)
 
     results = []
