@@ -31,6 +31,7 @@ def parse_args():
     parser.add_argument("--dense-patch-threshold", type=float, default=0.006)
     parser.add_argument("--skip-feature-threshold", type=float, default=0.9999)
     parser.add_argument("--dense-feature-threshold", type=float, default=0.98)
+    parser.add_argument("--anchor-mode", default="dual", choices=["dual", "rolling_only", "long_only"])
     parser.add_argument("--drift-per-frame", type=float, default=0.015)
     parser.add_argument("--noise-std", type=float, default=0.01)
     parser.add_argument("--seed", type=int, default=0)
@@ -121,6 +122,7 @@ def main():
         dense_patch_threshold=args.dense_patch_threshold,
         skip_feature_threshold=args.skip_feature_threshold,
         dense_feature_threshold=args.dense_feature_threshold,
+        anchor_mode=args.anchor_mode,
         warmup_frames=2,
     )
 
@@ -178,6 +180,7 @@ def main():
         "dense_patch_threshold": args.dense_patch_threshold,
         "skip_feature_threshold": args.skip_feature_threshold,
         "dense_feature_threshold": args.dense_feature_threshold,
+        "anchor_mode": args.anchor_mode,
         "dense_latency_ms_mean": mean(dense_latency_rows, "latency_ms"),
         "v5_latency_ms_mean": mean(v5_latency_rows, "latency_ms"),
         "dense_latency_ms_total": dense_total,

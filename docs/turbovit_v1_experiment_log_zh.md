@@ -1588,3 +1588,143 @@ Semantic-Stability Guided Streaming ViT Reuse
 ```text
 Semantic-Stability Guided Token Reuse
 ```
+
+## 2026-06-01：v5 Token-Level Semantic Dual-Anchor Reuse 初步验证
+
+### 目标
+
+这一轮正式开始验证 token 级双锚点复用：
+
+```text
+不再只判断“整帧是否稳定”，
+而是在 probe layer 后为每个 token 估计语义稳定性，
+稳定 token 复用，动态 token 重算。
+```
+
+核心机制：
+
+- rolling anchor 表示短期连续状态；
+- long/reference anchor 表示关键帧全局状态；
+- 每个 token 计算到 rolling / long 的相似性；
+- 使用 `min(sim_rolling, sim_long)` 作为 token 语义稳定性下界；
+- 稳定性最低的一部分 token 进入重算路径；
+- 静态 token 根据 `sim_rolling >= sim_long` 选择 rolling 或 long cache 作为复用来源。
+
+这一步的研究意义是：把 v4 的“帧级 semantic routing”推进为更接近最终论文方法的“token-level semantic reuse”。
+
+### 实验设置
+
+```text
+model: CLIP ViT-L/14@336
+weights: /home/mllm/models/clip-vit-large-patch14-336
+video: Big Buck Bunny real video
+num_frames: 96
+frame_stride: 1
+device: remote A100
+probe_layer: 2
+skip_feature_threshold: 0.9999
+dense_feature_threshold: 0.98
+```
+
+### refresh interval 与动态 token 比例扫描
+
+| 配置 | speedup | mean cosine | false skip | dense/skip/sparse | sparse ratio | rolling/long reuse |
+| --- | ---: | ---: | ---: | --- | ---: | --- |
+| N=4, ratio 0.60->0.95 | 1.068x | 0.984326 | 0 | 48/2/46 | 0.751 | 0.904 / 0.096 |
+| N=8, ratio 0.60->0.95 | 1.074x | 0.984488 | 0 | 45/2/49 | 0.772 | 0.926 / 0.074 |
+| N=12, ratio 0.60->0.95 | 1.082x | 0.985228 | 0 | 43/2/51 | 0.766 | 0.923 / 0.077 |
+| N=8, ratio 0.80->1.00 | 1.031x | 0.993598 | 0 | 45/2/49 | 0.899 | 0.926 / 0.074 |
+| N=12, ratio 0.80->1.00 | 1.030x | 0.992976 | 0 | 43/2/51 | 0.895 | 0.923 / 0.077 |
+| N=12, ratio 0.90->1.00 | 1.026x | 0.996097 | 0 | 43/2/51 | 0.947 | 0.923 / 0.077 |
+| N=16, ratio 0.80->1.00 | 1.037x | 0.992580 | 0 | 44/2/50 | 0.901 | 0.924 / 0.076 |
+| N=16, ratio 0.90->1.00 | 1.022x | 0.995540 | 0 | 44/2/50 | 0.951 | 0.924 / 0.076 |
+
+### 关键拆解
+
+以 N=16, ratio 0.90->1.00 为例：
+
+```text
+dense latency/frame: 37.752 ms
+v5 latency/frame: 36.945 ms
+speedup: 1.022x
+mean cosine: 0.995540
+false skip: 0
+
+sparse frames: 50 / 96
+sparse mean latency: 36.012 ms
+probe: 1.087 ms
+token selector: 0.174 ms
+selector/scatter: 1.702 ms
+sparse compute: 6.429 ms
+rolling reuse: 92.4%
+long reuse: 7.6%
+```
+
+和 v1/v3 的逐层判别相比，v5 的 token selector 成本已经明显下降，说明“先用轻量 probe 得到 token 稳定性，再统一指导后续复用”这个方向是成立的。
+
+但当前端到端加速仍然有限，主要原因不是判别开销，而是 sparse 分支本身还接近 dense：
+
+```text
+真实 ViT-L 中，动态 token 比例一旦提高到 0.9 以上，
+质量可以稳定到 cosine 0.995+，
+但 sparse compute + scatter 仍然吃掉了主要收益。
+```
+
+### 关于加大关键帧刷新间隔
+
+这轮验证了 `N=4/8/12/16`。
+
+现象：
+
+- 从 N=4 增大到 N=12，在低 ratio 配置下 speedup 从 1.068x 提升到 1.082x；
+- 继续到 N=16 后，高保真配置仍保持 false skip 为 0；
+- 但 N 增大带来的收益是温和的，不是数量级提升；
+- 原因是当前真实视频里真正的 dense 决策并不只来自固定 key frame refresh，还来自 semantic stability 低时的主动回退。
+
+因此，`refresh_interval` 可以作为释放速度的辅助旋钮，但不能单独构成最终方法的核心贡献。
+
+### 关于 dual-anchor / rolling-anchor correction
+
+当前结果说明可以正式进入这一方向，但需要明确它在论文方法中的角色：
+
+```text
+rolling anchor 是主复用来源，
+long anchor 是漂移校正与稳定性下界约束。
+```
+
+在这段真实视频中，static token 约 92% 选择 rolling anchor，约 8% 选择 long anchor。这说明 long anchor 不是高频主路径，但它提供两个关键价值：
+
+1. 防止 rolling state 一路漂移后被错误认为稳定；
+2. 让 token stability 使用 `min(rolling, long)` 形成更保守的可复用下界。
+
+这比“多加一个 anchor 做工程修补”的表述更适合作为论文 insight：
+
+```text
+短期连续性负责复用效率，
+长期参考状态负责漂移约束，
+二者共同定义 token-level semantic stability。
+```
+
+### 阶段性结论
+
+当前 v5 支持以下方向判断：
+
+1. 可以开始研究 dual-anchor / rolling-anchor correction，但它应作为“语义稳定性定义”的组成部分，而不是独立技巧。
+2. 加大关键帧间隔能带来一定速度收益，但在真实视频里无法单独大幅提速。
+3. 下一步真正值得优化的是 sparse execution path：
+   - 减少 scatter/gather；
+   - 合并 token selection 与 sparse compute；
+   - 探索 block/token-group 级复用，避免单 token 索引导致 GPU kernel 低效；
+   - 将 dense 回退从硬阈值改为更连续的 drift budget。
+4. 最终论文方法应收敛为一个统一表述：
+
+```text
+Dual-Anchor Semantic Stability Guided Token Reuse
+```
+
+它不是多个工程尝试堆叠，而是一个清晰机制：
+
+```text
+用短期 rolling anchor 和长期 reference anchor 共同估计视觉 token 的语义稳定性，
+再由稳定性统一决定 token 是否重算、从哪个 anchor 复用、以及何时刷新状态。
+```

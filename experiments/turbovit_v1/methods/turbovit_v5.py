@@ -26,6 +26,30 @@ def _token_cosine(left: torch.Tensor, right: torch.Tensor) -> torch.Tensor:
     return F.cosine_similarity(left, right, dim=-1)
 
 
+def _anchor_token_scores(
+    probe_output: torch.Tensor,
+    rolling_probe: torch.Tensor,
+    long_probe: torch.Tensor,
+    anchor_mode: str,
+) -> Tuple[torch.Tensor, torch.Tensor, float, float]:
+    rolling_sim = _token_cosine(probe_output, rolling_probe)
+    long_sim = _token_cosine(probe_output, long_probe)
+    if anchor_mode == "dual":
+        token_stability = torch.minimum(rolling_sim, long_sim)
+        use_rolling = rolling_sim >= long_sim
+    elif anchor_mode == "rolling_only":
+        token_stability = rolling_sim
+        use_rolling = torch.ones_like(rolling_sim, dtype=torch.bool)
+    elif anchor_mode == "long_only":
+        token_stability = long_sim
+        use_rolling = torch.zeros_like(long_sim, dtype=torch.bool)
+    else:
+        raise ValueError(f"unsupported anchor_mode: {anchor_mode}")
+    rolling_reuse_ratio = float(use_rolling.float().mean().item())
+    long_reuse_ratio = 1.0 - rolling_reuse_ratio
+    return token_stability, use_rolling, rolling_reuse_ratio, long_reuse_ratio
+
+
 def _adaptive_ratio(
     stability: float,
     sparse_ratio_min: float,
@@ -45,16 +69,17 @@ def _select_dynamic_tokens(
     rolling_probe: torch.Tensor,
     long_probe: torch.Tensor,
     dynamic_ratio: float,
+    anchor_mode: str,
 ) -> Tuple[torch.Tensor, torch.Tensor, float, float, float]:
-    rolling_sim = _token_cosine(probe_output, rolling_probe)
-    long_sim = _token_cosine(probe_output, long_probe)
-    token_stability = torch.minimum(rolling_sim, long_sim)
+    token_stability, use_rolling, rolling_reuse_ratio, long_reuse_ratio = _anchor_token_scores(
+        probe_output,
+        rolling_probe,
+        long_probe,
+        anchor_mode,
+    )
     seq_len = probe_output.shape[1]
     num_dynamic = max(1, min(seq_len, int(round(seq_len * dynamic_ratio))))
     dynamic_indices = torch.topk(token_stability, k=num_dynamic, dim=1, largest=False).indices
-    use_rolling = rolling_sim >= long_sim
-    rolling_reuse_ratio = float(use_rolling.float().mean().item())
-    long_reuse_ratio = 1.0 - rolling_reuse_ratio
     semantic_stability = float(token_stability.mean().item())
     return dynamic_indices, use_rolling, semantic_stability, rolling_reuse_ratio, long_reuse_ratio
 
@@ -139,6 +164,7 @@ def encode_stream_turbovit_v5(
     dense_patch_threshold: float = 0.006,
     skip_feature_threshold: float = 0.9999,
     dense_feature_threshold: float = 0.98,
+    anchor_mode: str = "dual",
     warmup_frames: int = 2,
 ) -> List[TurboV5FrameResult]:
     if refresh_interval < 1:
@@ -149,6 +175,8 @@ def encode_stream_turbovit_v5(
         raise ValueError("skip_patch_threshold must be <= dense_patch_threshold")
     if dense_feature_threshold > skip_feature_threshold:
         raise ValueError("dense_feature_threshold must be <= skip_feature_threshold")
+    if anchor_mode not in {"dual", "rolling_only", "long_only"}:
+        raise ValueError("anchor_mode must be one of: dual, rolling_only, long_only")
 
     model.eval()
     device = next(model.parameters()).device
@@ -205,9 +233,12 @@ def encode_stream_turbovit_v5(
             start_layer = min(probe_layer, len(model.blocks) - 1) + 1
 
             selector_start = perf_counter()
-            rolling_sim = _token_cosine(probe_output, rolling_probe)
-            long_sim = _token_cosine(probe_output, long_probe)
-            token_stability = torch.minimum(rolling_sim, long_sim)
+            token_stability, use_rolling, rolling_reuse_ratio, long_reuse_ratio = _anchor_token_scores(
+                probe_output,
+                rolling_probe,
+                long_probe,
+                anchor_mode,
+            )
             semantic_stability = float(token_stability.mean().item())
             token_selector_ms = (perf_counter() - selector_start) * 1000.0
 
@@ -240,6 +271,7 @@ def encode_stream_turbovit_v5(
                     rolling_probe,
                     long_probe,
                     adaptive_ratio,
+                    anchor_mode,
                 )
                 output, rolling_caches, selector_ms, sparse_compute_ms, observed_ratio = _dual_anchor_sparse_from_prefix(
                     model,
