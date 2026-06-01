@@ -2509,3 +2509,304 @@ debug: true
 2. 保留当前 `vit_output_postprocess` 入口，把 visual token writing / pruning 作为后处理实验位点；
 3. 用 tiny QA 先做任务保真 sanity，再准备 RVS 小子集真实视频；
 4. 在 RVS 小子集上记录 dense QA answer、Turbo-ViT answer、video encode latency、QA decode latency、visual token 写入比例、ReKV retrieval block 命中变化。
+
+---
+
+## 2026-06-01：真实 OneVision/SigLIP 上的 v7/v9 方法迁移实验
+
+### 实验目的
+
+这组实验的目的不是继续在离线 CLIP 原型上调参，而是回答一个更接近论文方法设计的问题：
+
+> 前面在 CLIP ViT-L 上得到的 dual-anchor / segment-aware reuse 机制，迁移到真实 LLaVA-OneVision 的 SigLIP vision tower 后，瓶颈和有效信号是否仍然成立？
+
+具体要验证四件事：
+
+1. **机制可迁移性**：v7 的 dual-anchor segment-aware routing 能否直接运行在真实 OneVision/SigLIP vision tower 上；
+2. **速度瓶颈定位**：真实 SigLIP 上到底是 routing、token selector、sparse execution，还是 dense fallback 吃掉收益；
+3. **方法主线取舍**：最终论文方法应继续走 token-level sparse recomputation，还是转向 low-cost anchor gate + correction；
+4. **顶会可发表性原则**：最终方法不能呈现为一串工程补丁，而要抽象为一个统一、简洁、有 insight 的流式视觉记忆机制。
+
+### 顶会方法设计原则
+
+这轮实验开始后，我们把方法设计原则明确为：
+
+```text
+最终 paper 中只呈现最终优雅方法，
+中间尝试只作为 insight 来源，不作为方法堆叠。
+```
+
+因此，每个候选机制都必须回答：
+
+1. 它是否能被解释为一个统一信号或统一原则；
+2. 它是否同时服务于 ViT recomputation、visual token writing、LLM cache retrieval 中至少两个位置；
+3. 它是否减少系统复杂性，而不是增加一堆难以解释的 if-else；
+4. 它是否有清晰的定量证据支撑，而不是只在单个 case 上偶然有效。
+
+### 工程实现
+
+本轮新增：
+
+| 文件 | 作用 |
+| --- | --- |
+| `experiments/turbovit_v1/models/hf_siglip_vit.py` | 将真实 `SiglipVisionModel` 包装成实验接口，支持 `forward_with_layers` / `forward_with_caches` |
+| `experiments/turbovit_v1/scripts/run_onevision_v7.py` | 在真实 LLaVA-OneVision vision tower 上运行 v7 dual-anchor segment-aware reuse |
+| `experiments/turbovit_v1/methods/turbovit_v9.py` | 新增 v9 AnchorGate：只用低成本 patch embedding drift 做 skip/dense 路由 |
+| `experiments/turbovit_v1/scripts/run_onevision_v9.py` | 在真实 OneVision/SigLIP 上运行 v9 AnchorGate |
+
+同时修改了 v7 的 segment selector：
+
+```text
+原来默认 ViT token = CLS + square patch grid
+现在兼容 SigLIP token = square patch grid，无 CLS token
+```
+
+这是必要修正，因为 OneVision/SigLIP 的视觉 token 序列没有 CLIP 风格 CLS token。
+
+### 实验设置
+
+```text
+model: LLaVA-OneVision-Qwen2-0.5B
+vision tower: SigLIPVisionModel
+video: Big Buck Bunny
+remote GPU: A100
+dtype: float16
+num_frames: 32
+main clip: start_frame=120, frame_stride=1
+baseline: dense SigLIP vision tower
+```
+
+### v7 迁移实验：dual-anchor segment-aware sparse
+
+#### 实验 A：保守高保真配置
+
+```text
+start_frame: 0
+frame_stride: 8
+refresh_interval: 8
+sparse_ratio: 0.55 -> 0.90
+old CLIP thresholds
+```
+
+结果：
+
+| speedup | latency reduction | mean cosine | min cosine | decision |
+| ---: | ---: | ---: | ---: | --- |
+| 0.789x | -26.7% | 0.9993 | 0.9985 | all dense |
+
+分析：
+
+旧 CLIP 阈值迁移到 SigLIP 后过于保守，32 帧全部进入 dense。这个结果证明了机制可运行，但不能证明 sparse 有效。
+
+#### 实验 B：强制 sparse 压力测试
+
+```text
+start_frame: 0
+frame_stride: 8
+refresh_interval: 16
+sparse_ratio: 0.25 -> 0.75
+dense fallback disabled
+```
+
+结果：
+
+| speedup | latency reduction | mean cosine | min cosine | dense/sparse |
+| ---: | ---: | ---: | ---: | ---: |
+| 0.518x | -93.1% | 0.5962 | 0.4290 | 2 / 30 |
+
+breakdown：
+
+| branch | frames | mean latency | probe | token selector | selector | sparse compute | observed ratio |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| dense | 2 | 8.99ms | 0 | 0 | 0 | 0 | 1.0 |
+| sparse | 30 | 17.52ms | 1.00ms | 2.20ms | 2.01ms | 7.42ms | 0.522 |
+
+分析：
+
+真实 OneVision/SigLIP 上，v7 sparse path 明显比 dense 慢。主要原因不是没有冗余，而是当前 PyTorch sparse execution 需要大量 gather/scatter、base clone、mixed output 构造；即使 observed dynamic ratio 只有 0.52，端到端仍然慢。
+
+#### 实验 C：连续帧 + skip/sparse 混合
+
+```text
+start_frame: 0
+frame_stride: 1
+refresh_interval: 16
+skip threshold relaxed
+```
+
+结果：
+
+| speedup | latency reduction | mean cosine | min cosine | dense/skip/sparse |
+| ---: | ---: | ---: | ---: | ---: |
+| 0.606x | -65.0% | 0.6997 | 0.5767 | 2 / 7 / 23 |
+
+breakdown：
+
+| branch | frames | mean latency |
+| --- | ---: | ---: |
+| dense | 2 | 8.14ms |
+| skip | 7 | 1.35ms |
+| sparse | 23 | 18.99ms |
+
+分析：
+
+这个结果很关键：
+
+1. skip 分支确实快，说明“复用”本身有速度空间；
+2. sparse 分支仍然慢，说明 token-level sparse recomputation 不是当前真实 OneVision 上的主方向；
+3. 只要大量帧进入 sparse，整体就会变慢；
+4. 因此最终方法应尽量把更多帧路由为 skip 或 cheap correction，而不是进入昂贵 sparse path。
+
+### v7 skip-only 上界
+
+为了隔离 skip 的速度上界，我们关闭 sparse，非参考帧直接复用 rolling anchor。
+
+#### N=16，中段 clip
+
+```text
+start_frame: 120
+frame_stride: 1
+refresh_interval: 16
+non-reference frames: skip
+```
+
+结果：
+
+| speedup | latency reduction | mean cosine | min cosine | dense/skip |
+| ---: | ---: | ---: | ---: | ---: |
+| 1.889x | 47.1% | 0.6648 | 0.5381 | 2 / 30 |
+
+#### N=4，中段 clip
+
+结果：
+
+| speedup | latency reduction | mean cosine | min cosine | dense/skip |
+| ---: | ---: | ---: | ---: | ---: |
+| 1.473x | 32.1% | 0.8523 | 0.7354 | 8 / 24 |
+
+分析：
+
+更频繁的 rolling correction 能显著提升保真，但速度下降。这个 trade-off 直接支持后续论文 insight：
+
+```text
+Long skip gives speed but accumulates drift;
+rolling correction controls drift but costs dense refresh;
+the missing component is a cheap correction between skip and dense.
+```
+
+### v9 AnchorGate：低成本 skip/dense 路由
+
+v7 skip 分支虽然不做 sparse compute，但仍然要运行 probe 和 token selector，因此 skip 也不够便宜。为此新增 v9 AnchorGate：
+
+```text
+Reference frame: dense encode and cache output
+Non-reference frame:
+  1. only compute patch embedding
+  2. compare embedding drift to rolling anchor
+  3. if drift <= threshold: skip and reuse anchor output
+  4. else: dense correction and update rolling anchor
+```
+
+这个版本故意不做 token-level sparse correction，用来隔离 low-cost gate 的价值。
+
+#### v9 trade-off，中段 clip，N=16
+
+| threshold | speedup | latency reduction | mean cosine | min cosine | dense/skip |
+| ---: | ---: | ---: | ---: | ---: | ---: |
+| 0.030 | 3.987x | 74.9% | 0.7572 | 0.5991 | 4 / 28 |
+| 0.010 | 2.150x | 53.5% | 0.8935 | 0.7476 | 12 / 20 |
+| 0.005 | 1.645x | 39.2% | 0.9333 | 0.8472 | 16 / 16 |
+
+分支耗时：
+
+| config | dense mean | skip mean | embed cost |
+| --- | ---: | ---: | ---: |
+| threshold 0.030 | 9.07ms | 1.23ms | ~0.30ms |
+| threshold 0.010 | 8.36ms | 1.54ms | ~0.29ms |
+| threshold 0.005 | 8.77ms | 1.87ms | ~0.31ms |
+
+注意：`threshold=0.030` 的第一帧 skip 有一次额外 warm-up 异常耗时，后续 skip 实际多在 `0.36ms-0.42ms`。后续正式实验需要增加 warm-up 或报告 median/p90。
+
+### 当前方向性结论
+
+这轮真实 OneVision/SigLIP 实验给出了比之前更明确的方向：
+
+1. **逐 token sparse recomputation 不适合作为最终主方法核心**  
+   在真实 OneVision 上，v7 sparse 帧平均 `17ms-19ms`，dense 只有约 `8.8ms`。非融合 gather/scatter sparse path 已经触摸到工程边界。
+
+2. **skip/reuse 才是速度空间的主要来源**  
+   v9 AnchorGate 只用 embedding drift 做路由，已经能达到 `1.65x-3.99x`，明显超过 STC-Cacher 报告的 ViT 侧 `24.5%` latency reduction。
+
+3. **但纯 skip 的特征保真不足**  
+   即使中等阈值 `0.005`，mean cosine 约 `0.933`，min cosine 约 `0.847`。如果直接把它作为最终方法，视觉特征漂移风险太大。
+
+4. **下一步应该研究 cheap correction，而不是继续优化 token sparse scatter**  
+   最自然的最终方法形态应是：
+
+```text
+AnchorGate:
+  cheap semantic drift estimation
+  -> skip stable frames
+  -> dense refresh for unstable frames
+  -> lightweight correction for mid-drift frames
+
+Unified usage:
+  ViT recomputation gate
+  visual token writing gate
+  ReKV/LLM cache retrieval gate
+```
+
+### 对最终 paper 方法的启示
+
+最终方法不应写成：
+
+```text
+我们尝试了 v1/v2/v3/v4/v5/v7/v9，然后堆出一个系统。
+```
+
+而应抽象为：
+
+```text
+Streaming video contains temporally stable visual semantics,
+but full feature recomputation and naive sparse recomputation are both inefficient.
+We propose an anchor-conditioned semantic stability mechanism that decides
+when to reuse, when to refresh, and when to correct visual memory.
+```
+
+中文主线可以理解为：
+
+```text
+锚点条件语义稳定性
+  -> 低成本判断当前帧是否值得重算
+  -> 稳定帧直接复用
+  -> 漂移帧触发 rolling correction
+  -> 同一信号控制视觉 token 写入和后端 cache 检索
+```
+
+这比单纯复刻 STC 更强，因为 STC 主要是“压缩 token 数”，而我们的方向是“先判断流式语义状态，再统一控制前端计算和后端记忆”。
+
+### 下一步实验
+
+下一步不要继续在 v7 sparse path 上投入太多。建议做：
+
+1. **v10 Cheap Correction**  
+   在 v9 AnchorGate 的 skip 和 dense 之间加入轻量校正，例如：
+   - projected visual token residual correction；
+   - layernorm-space affine correction；
+   - low-rank residual from anchor embedding drift；
+   - pooled token correction before `multi_modal_projector`。
+
+2. **任务级 QA 验证**  
+   把 v9/v10 接到 `vit_output_postprocess` 或 `_get_video_features`，用 tiny QA 检查 cosine 下降是否真的破坏答案。
+
+3. **visual token writing gate**  
+   对 skip 帧不写入全部视觉 tokens，只写入 anchor reference 或少量 correction tokens，直接联动 ReKV cache。
+
+4. **正式报告指标扩展**  
+   后续每次记录：
+   - mean / median / p90 latency；
+   - dense/skip/correct 分布；
+   - mean/min/p10 cosine；
+   - QA answer consistency；
+   - visual token writing reduction；
+   - ReKV cache memory / retrieval latency。
