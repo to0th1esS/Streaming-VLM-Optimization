@@ -60,16 +60,8 @@ def _layer_kv_reuse_sparse_from_prefix(
         q_selected, key_selected, value_selected = block._project_qkv(normed_selected)
         kv_projection_ms += (perf_counter() - kv_start) * 1000.0
 
-        base_key = torch.where(
-            use_rolling_expanded,
-            rolling_cache["key"],
-            long_cache["key"],
-        ).clone()
-        base_value = torch.where(
-            use_rolling_expanded,
-            rolling_cache["value"],
-            long_cache["value"],
-        ).clone()
+        base_key = _mix_anchor_cache("key", rolling_cache, long_cache, use_rolling_tokens)
+        base_value = _mix_anchor_cache("value", rolling_cache, long_cache, use_rolling_tokens)
         key = base_key.scatter(1, gather_idx, key_selected)
         value = base_value.scatter(1, gather_idx, value_selected)
 
@@ -86,11 +78,7 @@ def _layer_kv_reuse_sparse_from_prefix(
         mlp_selected = block.mlp(block.norm2(hidden_selected))
         output_selected = hidden_selected + mlp_selected
 
-        base_output = torch.where(
-            use_rolling_expanded,
-            rolling_cache["output"],
-            long_cache["output"],
-        ).clone()
+        base_output = _mix_anchor_cache("output", rolling_cache, long_cache, use_rolling_tokens)
         hidden_states = base_output.scatter(1, gather_idx, output_selected)
         sparse_compute_ms += (perf_counter() - sparse_start) * 1000.0
 
@@ -107,6 +95,36 @@ def _layer_kv_reuse_sparse_from_prefix(
     output = model.norm(hidden_states)
     observed_ratio = float(sum(dynamic_counts) / sum(token_counts)) if token_counts else 1.0
     return output, next_caches, selector_ms, sparse_compute_ms, observed_ratio, kv_projection_ms
+
+
+def _mix_anchor_cache(
+    cache_name: str,
+    rolling_cache: Dict[str, torch.Tensor],
+    long_cache: Dict[str, torch.Tensor],
+    use_rolling_tokens: torch.Tensor,
+) -> torch.Tensor:
+    if use_rolling_tokens.shape[0] != 1:
+        return torch.where(
+            use_rolling_tokens.unsqueeze(-1),
+            rolling_cache[cache_name],
+            long_cache[cache_name],
+        ).clone()
+
+    rolling_ratio = float(use_rolling_tokens.float().mean().item())
+    if rolling_ratio >= 0.5:
+        base = rolling_cache[cache_name].clone()
+        other_cache = long_cache[cache_name]
+        other_mask = ~use_rolling_tokens[0]
+    else:
+        base = long_cache[cache_name].clone()
+        other_cache = rolling_cache[cache_name]
+        other_mask = use_rolling_tokens[0]
+
+    other_indices = torch.nonzero(other_mask, as_tuple=False).flatten()
+    if other_indices.numel() > 0:
+        idx = other_indices.view(1, -1, 1).expand(-1, -1, base.shape[-1])
+        base.scatter_(1, idx, other_cache.gather(1, idx))
+    return base
 
 
 @torch.inference_mode()
