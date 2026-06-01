@@ -189,6 +189,9 @@ def work(QA_CLASS):
     parser.add_argument("--n_local", type=int, default=15000)
     parser.add_argument("--retrieve_size", type=int, default=64)
     parser.add_argument("--retrieve_chunk_size", type=int, default=1)
+    parser.add_argument("--enable_vit_sparse", type=str2bool, nargs='?', const=True, default=True)
+    parser.add_argument("--vit_cache_interval", type=int, default=2)
+    parser.add_argument("--vit_update_token_ratio", type=float, default=0.25)
     parser.add_argument("--debug", type=str2bool, nargs='?', const=True, default=True)
     args = parser.parse_args()
 
@@ -206,12 +209,23 @@ def work(QA_CLASS):
     model_path = MODELS[args.model]['model_path']
     load_func = MODELS[args.model]['load_func']
     logger.info(f"Loading VideoQA model: {model_path}")
-    videoqa_model, videoqa_processor = load_func(
-        model_path=model_path,
-        n_local=args.n_local,
-        topk=args.retrieve_size,
-        chunk_size=args.retrieve_chunk_size,
-    )
+    load_kwargs = {
+        "model_path": model_path,
+        "n_local": args.n_local,
+        "topk": args.retrieve_size,
+        "chunk_size": args.retrieve_chunk_size,
+    }
+    if args.model.startswith("llava_ov"):
+        load_kwargs.update(
+            {
+                "enable_vit_sparse": args.enable_vit_sparse,
+                "vit_sparse_config": {
+                    "cache_interval": args.vit_cache_interval,
+                    "update_token_ratio": args.vit_update_token_ratio,
+                },
+            }
+        )
+    videoqa_model, videoqa_processor = load_func(**load_kwargs)
 
     # Load ground truth file
     anno = json.load(open(args.anno_path))

@@ -108,7 +108,8 @@ class LlavaOneVision_ReKV(LlavaOnevisionForConditionalGeneration, Abstract_ReKV)
 
 
 def load_model(model_path='model_zoo/LLaVA/llava-onevision-qwen2-7b-ov-hf',
-               n_init=None, n_local=None, topk=64, chunk_size=1):
+               n_init=None, n_local=None, topk=64, chunk_size=1,
+               enable_vit_sparse=True, vit_sparse_config=None):
     device = 'cuda'
     n_frame_tokens = 60 ### 196 after compress  
     processor = LlavaOnevisionProcessor.from_pretrained(model_path)
@@ -145,15 +146,20 @@ def load_model(model_path='model_zoo/LLaVA/llava-onevision-qwen2-7b-ov-hf',
     logger.info(f'n_frame_tokens: {n_frame_tokens}')
 
 
-    vit_config = {
-        'cache_interval': 2,
-        'update_token_ratio': 0.25,
-        'vit_sparse_encode_chunk_size': 1,
-    }
-    
-    logger.info(f"DEBUG: 准备调用 vit_patch_hf...") 
-    model = vit_patch_hf(model, **vit_config)
-    logger.info(f"DEBUG: 调用 vit_patch_hf 结束。")
+    if enable_vit_sparse:
+        vit_config = {
+            'cache_interval': 2,
+            'update_token_ratio': 0.25,
+            'vit_sparse_encode_chunk_size': 1,
+        }
+        if vit_sparse_config:
+            vit_config.update(vit_sparse_config)
+
+        logger.info(f"DEBUG: 准备调用 vit_patch_hf...")
+        model = vit_patch_hf(model, **vit_config)
+        logger.info(f"DEBUG: 调用 vit_patch_hf 结束。")
+    else:
+        logger.info("ViT sparse patch disabled.")
 
 
     model.eval()
