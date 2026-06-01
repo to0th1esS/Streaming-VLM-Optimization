@@ -1341,3 +1341,250 @@ gate_layer=0, ratio 0.75 -> 0.95, skip=0.001:
 - 做真实视频多片段统计：
   - 当前 Big Buck Bunny 单片段有明显场景依赖；
   - 需要静态镜头、缓慢运动、快速运动、镜头切换、小目标运动五类子集。
+
+## v4：Semantic-Stability Adaptive Reuse 原型
+
+方法设计收敛：
+
+前面的 v1/v2/v3 不应在最终论文中以“工程尝试堆叠”的形式呈现。根据实验现象，可以抽象成一个更干净的核心 insight：
+
+```text
+真实流视频中的可复用性不是由 patch-level change 决定，
+而是由视觉编码器内部的 semantic state stability 决定。
+```
+
+因此 v4 不再把 patch drift、feature gate、ratio 分成多个割裂模块，而是引入一个统一的语义稳定性分数：
+
+```text
+S_t = min(
+  cosine(P_t, P_rolling),
+  cosine(P_t, P_long)
+)
+```
+
+其中：
+
+- `P_t`：当前帧在浅层 probe layer 的语义状态；
+- `P_rolling`：最近一次 accepted state 的 rolling anchor；
+- `P_long`：最近 dense keyframe 的 long anchor；
+- `S_t` 同时用于决定：
+  - skip；
+  - sparse；
+  - dense；
+  - sparse 的 adaptive token ratio。
+
+这比 v3 的“先 patch 再 gate”更适合作为最终方法叙事，因为它不是补丁式规则，而是一个统一准则：
+
+```text
+semantic stability controls reuse.
+```
+
+新增实现：
+
+```text
+experiments/turbovit_v1/methods/turbovit_v4.py
+experiments/turbovit_v1/scripts/run_turbovit_v4.py
+scripts/run_turbovit_v4_local.ps1
+```
+
+v4 routing：
+
+```text
+1. forced keyframe:
+   dense, update rolling anchor and long anchor
+
+2. non-keyframe:
+   run shallow probe layer
+   compute semantic stability S_t to rolling and long anchors
+
+3. if patch drift high or S_t low:
+   dense refresh
+
+4. if patch drift low and S_t very high:
+   skip
+
+5. otherwise:
+   sparse update with adaptive ratio
+```
+
+adaptive ratio：
+
+```text
+ratio_t = ratio_min + alpha * (ratio_max - ratio_min)
+alpha = (skip_feature_threshold - S_t)
+        / (skip_feature_threshold - dense_feature_threshold)
+```
+
+直觉：
+
+- `S_t` 越高，帧越稳定，可以用更低 ratio；
+- `S_t` 越低，帧越不稳定，ratio 自动升高；
+- 如果低到不可复用，则直接 dense。
+
+### Step 1：v4 三档语义稳定性配置
+
+真实视频设置：
+
+```text
+backbone: CLIP ViT-L/14
+video: Big Buck Bunny
+num_frames: 48
+frame_stride: 1
+refresh_interval: 4
+probe_layer: 2
+```
+
+结果：
+
+```text
+balanced:
+  ratio: 0.75 -> 1.00
+  skip_feature_threshold: 0.9995
+  dense_feature_threshold: 0.98
+  speedup: 1.063x
+  mean cosine: 0.989540
+  false skip: 1
+  dense/skip/sparse: 14/3/31
+
+conservative:
+  ratio: 0.80 -> 1.00
+  skip_feature_threshold: 0.9997
+  dense_feature_threshold: 0.99
+  speedup: 1.034x
+  mean cosine: 0.995961
+  false skip: 1
+  dense/skip/sparse: 20/3/25
+
+aggressive:
+  ratio: 0.70 -> 0.95
+  skip_feature_threshold: 0.9990
+  dense_feature_threshold: 0.97
+  speedup: 1.113x
+  mean cosine: 0.978023
+  false skip: 1
+  dense/skip/sparse: 13/3/32
+```
+
+分析：
+
+- v4 形成了清晰 Pareto：
+  - aggressive 更快但质量下降；
+  - conservative 更稳但速度下降；
+  - balanced 居中。
+- 但三个配置仍有 1 个 false skip，说明 skip 条件还需更严格。
+
+### Step 2：strict skip
+
+将 `skip_feature_threshold` 提高到 `0.9999`。
+
+48 帧结果：
+
+```text
+strict skip:
+  ratio: 0.75 -> 1.00
+  skip_feature_threshold: 0.9999
+  dense_feature_threshold: 0.98
+  speedup: 1.045x
+  mean cosine: 0.990123
+  false skip: 0
+  dense/skip/sparse: 14/2/32
+
+strict conservative:
+  ratio: 0.80 -> 1.00
+  skip_feature_threshold: 0.9999
+  dense_feature_threshold: 0.99
+  speedup: 1.013x
+  mean cosine: 0.996372
+  false skip: 0
+  dense/skip/sparse: 20/2/26
+```
+
+分析：
+
+- strict skip 可以消除 false skip。
+- 代价是 skip 帧更少，因此速度下降。
+- 这说明真实视频里 skip 必须非常保守，不能作为唯一加速来源。
+
+### Step 3：96 帧稳定性验证
+
+配置：
+
+```text
+ratio: 0.75 -> 1.00
+skip_feature_threshold: 0.9999
+dense_feature_threshold: 0.98
+num_frames: 96
+```
+
+结果：
+
+```text
+speedup: 1.019x
+mean cosine: 0.994589
+false skip: 0
+dense/skip/sparse: 54/2/40
+
+dense latency/frame: 37.874 ms
+v4 latency/frame: 37.184 ms
+sparse mean ratio: 0.856
+sparse mean semantic stability: 0.9915
+```
+
+分析：
+
+- 96 帧结果说明 strict v4 的质量稳定，false skip 维持为 0。
+- 但加速只有 `1.02x`，说明当前真实视频片段中：
+  - skip 机会非常少；
+  - dense refresh 比例较高；
+  - sparse 分支仍接近 dense 成本。
+- 这不是方法设计失败，而是进一步定位出最终优化重点：
+
+```text
+语义稳定性用于帧级 routing 是必要的，
+但还不够。
+下一步要把语义稳定性推进到 token-level reuse。
+```
+
+### 当前方向性结论
+
+截至 v4，我们可以把最终论文方法收敛为一个优雅方向：
+
+```text
+Semantic-Stability Guided Streaming ViT Reuse
+```
+
+它的核心不是“做了 patch MSE、feature gate、adaptive ratio 几个工程模块”，而是：
+
+```text
+利用双锚点估计当前视觉语义状态的稳定性，
+再用稳定性统一决定帧级路由与 token 级复用强度。
+```
+
+现有实验支持三个 insight：
+
+1. **Patch change is not semantic stability**
+   - patch MSE 与 final error 相关性弱；
+   - 真实视频 false skip 证明低 patch drift 不等于可复用。
+
+2. **Dual-anchor semantic stability is safer**
+   - rolling anchor 捕捉局部连续性；
+   - long anchor 防止 rolling state 漂移；
+   - `min(sim rolling, sim long)` 是一个自然稳定性下界。
+
+3. **Frame-level routing alone is insufficient**
+   - strict routing 可保质量但速度有限；
+   - 真正要释放速度，必须把稳定性用于 token-level reuse。
+
+下一步最重要：
+
+- 实现 `token-level semantic stability`：
+  - 在 probe layer 计算每个 token 到 rolling/long anchor 的稳定性；
+  - 每个 token 得到自己的 reuse score；
+  - 高稳定 token 复用；
+  - 低稳定 token 重算；
+  - 中间 token 可根据 long/rolling 更接近的一侧选择复用来源。
+- 这会把 v4 从“帧级稳定性路由”推进为真正适合论文最终方法的：
+
+```text
+Semantic-Stability Guided Token Reuse
+```
