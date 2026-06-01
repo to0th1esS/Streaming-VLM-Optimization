@@ -17,7 +17,12 @@ from transformers import (
 import logzero
 from logzero import logger
 
-from model import llava_onevision_rekv, video_llava_rekv, longva_rekv
+from model import llava_onevision_rekv, video_llava_rekv
+
+try:
+    from model import longva_rekv
+except ModuleNotFoundError:
+    longva_rekv = None
 
 
 MODELS = {
@@ -45,11 +50,13 @@ MODELS = {
         'processor_class': VideoLlavaProcessor,
         'model_path': 'model_zoo/Video-LLaVA-7B-hf',
     },
-    'longva_7b': {
+}
+
+if longva_rekv is not None:
+    MODELS['longva_7b'] = {
         'load_func': longva_rekv.load_model,
         'model_path': 'model_zoo/LongVA-7B',
-    },
-}
+    }
 
 
 class BaseVQA:
