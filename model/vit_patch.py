@@ -94,6 +94,23 @@ def _new_get_video_features(self, pixel_values_videos):
     return video_features
 
 
+def _get_video_features_from_embeddings(self, embeddings, batch_size, frames):
+    encoder_outputs = self.vision_tower.vision_model.encoder(
+        inputs_embeds=embeddings,
+        output_hidden_states=True,
+    )
+    selected_video_feature = encoder_outputs.hidden_states[self.config.vision_feature_layer]
+
+    if self.config.vision_feature_select_strategy == "default":
+        selected_video_feature = selected_video_feature[:, 1:]
+    elif self.config.vision_feature_select_strategy == "full":
+        selected_video_feature = selected_video_feature
+
+    video_features = self.multi_modal_projector(selected_video_feature)
+    video_features = self.apply_pooling(video_features)
+    return video_features.reshape(batch_size, frames * video_features.shape[1], -1)
+
+
 def _encode_video_chunk_with_semantic_compute_gate(self, video_chunk):
     pixel_values_videos = self.processor.video_processor(
         video_chunk,
@@ -114,8 +131,13 @@ def _encode_video_chunk_with_semantic_compute_gate(self, video_chunk):
     if keep_indices.numel() == 0:
         return
 
-    kept_pixel_values = pixel_values_videos.index_select(1, keep_indices)
-    video_features = self._get_video_features(kept_pixel_values)
+    kept_embeddings = embeddings.index_select(0, keep_indices)
+    video_features = _get_video_features_from_embeddings(
+        self,
+        kept_embeddings,
+        batch_size=batch_size,
+        frames=int(keep_indices.numel()),
+    )
     if video_features.shape[1] == 0:
         return
     assert self.n_local >= video_features.shape[1], (
