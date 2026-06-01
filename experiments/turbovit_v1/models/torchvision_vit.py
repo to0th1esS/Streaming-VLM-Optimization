@@ -36,13 +36,14 @@ class TorchvisionViTBlockAdapter:
     def forward_with_cache(self, hidden_states: torch.Tensor) -> Tuple[torch.Tensor, Dict[str, torch.Tensor]]:
         residual = hidden_states
         normed = self.norm1(hidden_states)
-        _, key, _ = self._project_qkv(normed)
+        _, key, value = self._project_qkv(normed)
         attn_out, _ = self.attn(normed, normed, normed, need_weights=False)
         hidden_states = residual + self.dropout(attn_out)
         mlp_out = self.mlp(self.norm2(hidden_states))
         hidden_states = hidden_states + mlp_out
         cache = {
             "key": key.detach(),
+            "value": value.detach(),
             "output": hidden_states.detach(),
         }
         return hidden_states, cache

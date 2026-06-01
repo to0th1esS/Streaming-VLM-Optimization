@@ -32,7 +32,7 @@ class HFCLIPBlockAdapter:
     def forward_with_cache(self, hidden_states: torch.Tensor) -> Tuple[torch.Tensor, Dict[str, torch.Tensor]]:
         residual = hidden_states
         normed = self.norm1(hidden_states)
-        _, key, _ = self._project_qkv(normed)
+        _, key, value = self._project_qkv(normed)
         attn_out, _ = self.attn(
             hidden_states=normed,
             attention_mask=None,
@@ -46,6 +46,7 @@ class HFCLIPBlockAdapter:
         hidden_states = residual + hidden_states
         cache = {
             "key": key.detach(),
+            "value": value.detach(),
             "output": hidden_states.detach(),
         }
         return hidden_states, cache
