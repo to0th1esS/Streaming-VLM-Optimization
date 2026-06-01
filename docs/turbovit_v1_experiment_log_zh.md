@@ -1728,3 +1728,83 @@ Dual-Anchor Semantic Stability Guided Token Reuse
 用短期 rolling anchor 和长期 reference anchor 共同估计视觉 token 的语义稳定性，
 再由稳定性统一决定 token 是否重算、从哪个 anchor 复用、以及何时刷新状态。
 ```
+
+## 2026-06-01：v5 Anchor Ablation
+
+### 目的
+
+上一组结果说明 long anchor 被使用比例约 8%，但这还不足以证明 dual-anchor 必要。
+
+因此增加 `anchor_mode` 消融：
+
+```text
+dual:         stability = min(sim_rolling, sim_long)，静态 token 选择更接近的 anchor
+rolling_only: stability = sim_rolling，所有静态 token 复用 rolling anchor
+long_only:    stability = sim_long，所有静态 token 复用 long/reference anchor
+```
+
+实验配置保持一致：
+
+```text
+model: CLIP ViT-L/14@336
+video: Big Buck Bunny real video
+num_frames: 96
+frame_stride: 1
+refresh_interval: 16
+ratio: 0.80 -> 1.00
+probe_layer: 2
+device: remote A100
+```
+
+### 结果
+
+| anchor mode | speedup | mean cosine | min cosine | p10 cosine | false skip | dense/skip/sparse | sparse ratio |
+| --- | ---: | ---: | ---: | ---: | ---: | --- | ---: |
+| dual | 1.033x | 0.992580 | 0.943300 | 0.976184 | 0 | 44/2/50 | 0.901 |
+| rolling_only | 1.053x | 0.985255 | 0.890192 | 0.964159 | 0 | 28/2/66 | 0.872 |
+| long_only | 1.035x | 0.991414 | 0.931265 | 0.974055 | 0 | 44/2/50 | 0.900 |
+
+### 分析
+
+rolling-only 的速度最高，原因很明确：
+
+- rolling similarity 偏乐观；
+- dense 回退帧从 dual 的 44 帧降到 28 帧；
+- sparse 帧从 50 帧升到 66 帧；
+- 平均动态 token 比例也更低。
+
+但它的质量明显下降：
+
+```text
+mean cosine: 0.992580 -> 0.985255
+min cosine:  0.943300 -> 0.890192
+p10 cosine:  0.976184 -> 0.964159
+```
+
+这说明 rolling anchor 捕捉短期连续性很有效，但会高估可复用性；如果只看 rolling 状态，方法会更积极地复用，但会产生局部帧的大幅漂移。
+
+long-only 比 rolling-only 更稳，但它没有利用 rolling anchor 的短期连续优势；其均值和低分位都略弱于 dual。
+
+因此 dual-anchor 的价值不是“多一个缓存来源”，而是：
+
+```text
+rolling anchor 提供短期复用机会，
+long anchor 提供长期漂移约束，
+min(sim_rolling, sim_long) 把二者合成一个保守的 semantic stability 下界。
+```
+
+这组消融可以支撑论文中的方法设计：
+
+1. 单 rolling anchor 会过度自信，速度更快但低质量帧风险增大；
+2. 单 long anchor 稳定但缺少短期自适应；
+3. dual-anchor 在速度与保真之间更均衡，并显著改善最差帧和低分位质量。
+
+### 对下一步优化的启发
+
+当前最值得继续推进的是：
+
+- 保留 dual-anchor semantic stability 作为最终方法主线；
+- 不再把“大幅加大 refresh interval”作为主要加速来源；
+- 重点优化 sparse path 的 GPU 友好实现；
+- 尝试 token-group / block-wise reuse，让复用不再依赖大量零散 gather/scatter；
+- 引入 drift budget，让 rolling-only 的积极性在可控范围内释放，而不是完全依赖硬阈值回退。
