@@ -70,6 +70,7 @@ def encode_stream_turbovit_v3(
     video: torch.Tensor,
     refresh_interval: int = 4,
     dynamic_ratio: float = 0.9,
+    dynamic_ratio_max: Optional[float] = None,
     skip_threshold: float = 0.001,
     dense_threshold: float = 0.006,
     feature_gate_layer: int = 5,
@@ -80,6 +81,8 @@ def encode_stream_turbovit_v3(
         raise ValueError("refresh_interval must be >= 1")
     if not (0.0 < dynamic_ratio <= 1.0):
         raise ValueError("dynamic_ratio must be in (0, 1]")
+    if dynamic_ratio_max is not None and not (dynamic_ratio <= dynamic_ratio_max <= 1.0):
+        raise ValueError("dynamic_ratio_max must be in [dynamic_ratio, 1]")
     if skip_threshold < 0 or dense_threshold < 0:
         raise ValueError("thresholds must be non-negative")
     if skip_threshold > dense_threshold:
@@ -162,11 +165,16 @@ def encode_stream_turbovit_v3(
                 decision = "gate_dense"
                 is_reference = True
         else:
+            sparse_dynamic_ratio = dynamic_ratio
+            if dynamic_ratio_max is not None and dense_threshold > skip_threshold:
+                drift_alpha = (frame_drift - skip_threshold) / (dense_threshold - skip_threshold)
+                drift_alpha = max(0.0, min(1.0, drift_alpha))
+                sparse_dynamic_ratio = dynamic_ratio + (dynamic_ratio_max - dynamic_ratio) * drift_alpha
             output, ref_caches, selector_ms, sparse_compute_ms, dynamic_ratio_observed = _sparse_from_reference(
                 model,
                 frame,
                 ref_caches,
-                dynamic_ratio,
+                sparse_dynamic_ratio,
             )
             ref_embed = current_embed.detach()
             ref_output = output.detach()

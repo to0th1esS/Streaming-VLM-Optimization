@@ -25,6 +25,7 @@ def parse_args():
     parser.add_argument("--frame-stride", type=int, default=1)
     parser.add_argument("--refresh-interval", type=int, default=4)
     parser.add_argument("--dynamic-ratio", type=float, default=0.9)
+    parser.add_argument("--dynamic-ratio-max", type=float, default=0.0)
     parser.add_argument("--skip-threshold", type=float, default=0.001)
     parser.add_argument("--dense-threshold", type=float, default=0.006)
     parser.add_argument("--feature-gate-layer", type=int, default=5)
@@ -110,6 +111,7 @@ def main():
         video,
         refresh_interval=args.refresh_interval,
         dynamic_ratio=args.dynamic_ratio,
+        dynamic_ratio_max=args.dynamic_ratio_max if args.dynamic_ratio_max > 0 else None,
         skip_threshold=args.skip_threshold,
         dense_threshold=args.dense_threshold,
         feature_gate_layer=args.feature_gate_layer,
@@ -165,6 +167,7 @@ def main():
         "frame_stride": args.frame_stride,
         "refresh_interval": args.refresh_interval,
         "dynamic_ratio": args.dynamic_ratio,
+        "dynamic_ratio_max": args.dynamic_ratio_max,
         "skip_threshold": args.skip_threshold,
         "dense_threshold": args.dense_threshold,
         "feature_gate_layer": args.feature_gate_layer,

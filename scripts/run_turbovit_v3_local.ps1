@@ -9,6 +9,7 @@ param(
     [int]$FrameStride = 1,
     [int]$RefreshInterval = 4,
     [double]$DynamicRatio = 0.9,
+    [double]$DynamicRatioMax = 0.0,
     [double]$SkipThreshold = 0.001,
     [double]$DenseThreshold = 0.006,
     [int]$FeatureGateLayer = 5,
@@ -38,6 +39,7 @@ if (!(Test-Path $MicromambaExe)) {
     --frame-stride $FrameStride `
     --refresh-interval $RefreshInterval `
     --dynamic-ratio $DynamicRatio `
+    --dynamic-ratio-max $DynamicRatioMax `
     --skip-threshold $SkipThreshold `
     --dense-threshold $DenseThreshold `
     --feature-gate-layer $FeatureGateLayer `
