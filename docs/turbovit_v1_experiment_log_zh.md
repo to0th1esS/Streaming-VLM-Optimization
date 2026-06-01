@@ -2257,3 +2257,152 @@ ViT segment stability -> LLM/REKV cache write/retrieval policy
 ```
 
 目前更推荐后者，因为当前 PyTorch 前端原型已经反复显示：选择策略越来越合理，但单靠非融合 sparse tensor 操作很难释放真实速度。
+
+## 2026-06-01：Speed-First 目标转向实验
+
+### 背景
+
+前面所有版本主要在保证视觉特征保真，尤其是控制 final feature cosine 和 false skip。
+
+但如果目标是超越 STC，并且不完全限定在它的评测赛道上，下一阶段必须把目标从：
+
+```text
+高特征保真下的小幅加速
+```
+
+切换为：
+
+```text
+速度优先，任务保真兜底。
+```
+
+原因是 STC 的高加速并不是在严格保持每帧视觉特征 cosine 的前提下实现的，而是通过 benchmark QA 精度来约束压缩误差。因此，我们需要先找到 speed-first 的速度上界和 Pareto 区间。
+
+### 实验设置
+
+```text
+model: CLIP ViT-L/14@336
+video: Big Buck Bunny real video
+num_frames: 96
+frame_stride: 1
+device: remote A100
+method: v5 dual-anchor token reuse
+主要变化:
+  - 放宽 dense fallback
+  - 降低 sparse dynamic ratio
+  - 增大 refresh_interval
+```
+
+### 结果
+
+| config | speedup | latency reduction | mean cosine | false skip | visual token reduction |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| N=16, ratio 0.25->0.75, relaxed | 1.364x | 26.7% | 0.877436 | 1 | 51.8% |
+| N=32, ratio 0.25->0.75, relaxed | 1.363x | 26.6% | 0.882127 | 1 | - |
+| N=16, ratio 0.40->0.85, relaxed | 1.288x | 22.4% | 0.905866 | 1 | 40.5% |
+| N=16, ratio 0.55->0.90, mid | 1.168x | 14.4% | 0.955865 | 1 | 25.2% |
+| N=16, ratio 0.70->0.95, mid | 1.119x | 10.6% | 0.973667 | 1 | 17.5% |
+| N=16, ratio 0.55->0.90, no-skip | 1.132x | 11.7% | 0.956092 | 0 | 22.8% |
+
+其中：
+
+```text
+latency reduction = 1 - 1 / speedup
+visual token reduction 来自 cache policy simulation
+```
+
+### Breakdown
+
+最激进配置：
+
+```text
+N=16, ratio 0.25->0.75:
+  dense/skip/sparse: 8/4/84
+  sparse adaptive ratio: 0.455
+  sparse latency: 26.916 ms
+  speedup: 1.364x
+  cosine: 0.877
+```
+
+中间配置：
+
+```text
+N=16, ratio 0.55->0.90:
+  dense/skip/sparse: 17/4/75
+  sparse adaptive ratio: 0.731
+  sparse latency: 31.697 ms
+  speedup: 1.168x
+  cosine: 0.956
+```
+
+关闭 skip 后：
+
+```text
+N=16, ratio 0.55->0.90, no-skip:
+  dense/sparse: 17/79
+  false skip: 0
+  speedup: 1.132x
+  cosine: 0.956
+```
+
+### 分析
+
+这组实验说明：
+
+1. 纯 ViT 前端在真实视频上可以达到约 `1.36x` speedup，但对应 cosine 只有约 `0.88`，不能直接作为高保真主结果。
+2. 如果希望维持 cosine 约 `0.95+`，目前较现实的 speedup 是 `1.13x-1.17x`。
+3. 速度主要来自两个因素：
+   - dense fallback 从之前的 44 帧降到 8-17 帧；
+   - sparse dynamic ratio 从约 0.90 降到 0.45-0.73。
+4. 关闭 skip 可以消除 false skip，但速度从 1.168x 降到 1.132x。
+5. speed-first 配置已经让理论视觉 token 写入减少到 `22.8%-51.8%`，这说明后端 REKV/LLM cache 联合设计的空间明显变大。
+
+### 与 STC 的关系
+
+STC 的 ReKV 主结果是：
+
+```text
+ViT encoding latency ↓24.5%
+LLM prefilling latency ↓45.3%
+```
+
+当前 speed-first v5 的最激进点：
+
+```text
+ViT latency ↓26.7%
+visual token writing ↓51.8%
+```
+
+这说明如果只看速度上界，我们已经能接近甚至超过 STC-Cacher 的 ViT latency reduction。但问题是特征保真不足。
+
+因此，下一步不应该继续单纯追求 feature cosine，而应转向：
+
+```text
+任务保真约束下的速度最大化。
+```
+
+也就是：
+
+```text
+用小规模 QA sanity check 判断 cosine 0.90-0.96 的视觉特征变化是否真的影响答案。
+```
+
+如果 QA 仍稳定，那么 speed-first 配置就可能成为比 STC 更强的候选；如果 QA 不稳定，则需要引入后端 cache/pruner 来补偿。
+
+### 下一步结论
+
+后续主线应该是：
+
+```text
+Dual-Anchor Semantic Stability
+  -> speed-first ViT reuse
+  -> REKV-style visual cache/pruning
+  -> task-level QA fidelity
+```
+
+这比单纯复刻 STC 更有潜力，因为我们的 dual-anchor 和 segment stability 可以同时服务于：
+
+1. ViT 动态重算；
+2. 视觉 token 写入；
+3. LLM cache 检索；
+4. QA 任务保真控制。
