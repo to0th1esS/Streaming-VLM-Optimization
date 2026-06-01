@@ -1808,3 +1808,127 @@ min(sim_rolling, sim_long) 把二者合成一个保守的 semantic stability 下
 - 重点优化 sparse path 的 GPU 友好实现；
 - 尝试 token-group / block-wise reuse，让复用不再依赖大量零散 gather/scatter；
 - 引入 drift budget，让 rolling-only 的积极性在可控范围内释放，而不是完全依赖硬阈值回退。
+
+## 2026-06-01：v6 Token-Group / Block-Wise Reuse 初步验证
+
+### 目的
+
+v5 的主要瓶颈已经不是 token selector，而是 sparse path 的零散 gather/scatter 与动态 token 计算不够 GPU 友好。
+
+因此 v6 验证一个自然假设：
+
+```text
+如果不再选择离散 token，
+而是按空间邻域选择动态 token group，
+是否能让复用更稳定，并为后续 block-wise kernel 友好实现提供依据？
+```
+
+v6 保留 v5 的 dual-anchor semantic stability，但改动动态 token 选择方式：
+
+- CLS token 始终重算；
+- patch token 按 `group_size x group_size` 空间块分组；
+- 每个块用 mean/min stability 得到 group score；
+- 选择稳定性最低的若干组作为动态区域；
+- 组内 token 全部重算，其余 token 继续按 rolling/long anchor 复用。
+
+### 实验设置
+
+```text
+model: CLIP ViT-L/14@336
+video: Big Buck Bunny real video
+num_frames: 96
+frame_stride: 1
+refresh_interval: 16
+probe_layer: 2
+anchor_mode: dual
+device: remote A100
+```
+
+### 高保真配置：ratio 0.80 -> 1.00
+
+| method | group size | speedup | mean cosine | min cosine | p10 cosine | false skip |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| v5 token top-k | - | 1.033x | 0.992580 | 0.943300 | 0.976184 | 0 |
+| v6 group top-k | 2 | 1.003x | 0.993238 | 0.942533 | 0.980694 | 0 |
+| v6 group top-k | 3 | 1.019x | 0.994342 | 0.928517 | 0.984824 | 0 |
+
+拆解观察：
+
+```text
+v6 group3 sparse latency: 36.229 ms
+v5 sparse latency:        35.366 ms
+
+v6 group3 sparse compute: 6.392 ms
+v5 sparse compute:        6.507 ms
+
+v6 group3 selector/scatter: 1.683 ms
+v5 selector/scatter:        1.725 ms
+```
+
+v6 的 sparse compute 和 scatter 有轻微下降，但整体 sparse latency 没有明显领先。原因是当前实现仍然使用同一套 gather/scatter sparse path；空间块只改变了“选哪些 token”，没有真正改变 GPU kernel 的执行形态。
+
+质量方面，v6 在高保真配置下提升了 mean/p10 cosine，说明空间块选择有一定语义合理性：动态区域往往局部连续，块状重算能减少孤立 token 错判。
+
+### 激进配置：ratio 0.60 -> 0.95
+
+| method | group size | speedup | mean cosine | min cosine | p10 cosine | false skip |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| v5 token top-k | - | 1.081x | 0.983931 | 0.911828 | 0.949083 | 0 |
+| v6 group top-k | 3 | 1.058x | 0.983210 | 0.871338 | 0.947479 | 0 |
+| v6 group top-k | 4 | 1.057x | 0.982639 | 0.890678 | 0.942818 | 0 |
+
+激进配置下，v6 没有优于 v5。
+
+这说明当前 block-wise selection 并不是“天然更稳”。当动态 token budget 变小后，块状选择会带来两个问题：
+
+1. 一个 block 内并非所有 token 都同等动态，组内重算会浪费 budget；
+2. 如果动态区域形状细碎，固定正方形 block 会漏掉部分真正变化 token。
+
+### 阶段性结论
+
+v6 给出一个重要负结果：
+
+```text
+只把 token top-k 换成 spatial group top-k，
+不足以解决真实 ViT sparse path 的速度瓶颈。
+```
+
+它带来的启发更重要：
+
+1. **选择粒度与执行粒度必须一起设计**
+   - 现在 v6 只是 block-wise selection；
+   - 但后端仍是 token gather/scatter；
+   - 所以 GPU 友好性没有真正释放。
+
+2. **块状复用适合高保真，但不适合盲目激进压缩**
+   - 高保真配置下 p10 cosine 提升；
+   - 激进配置下 min cosine 下降；
+   - 固定空间块会在 token budget 低时变得粗糙。
+
+3. **下一版不应继续堆 selection heuristic**
+   - 继续换 group score 或 group size 的收益有限；
+   - 更关键的是把 sparse path 变成真正的 segment/block execution。
+
+### 下一步方法方向
+
+v6 之后，论文方法主线应保持：
+
+```text
+Dual-Anchor Semantic Stability Guided Token Reuse
+```
+
+但工程实现要从“token sparse”转为“segment-aware reuse”：
+
+```text
+先用 dual-anchor stability 得到 token-level score，
+再把相邻高动态 token 合并成少量 segment，
+对 segment 做连续 gather / batched compute / scatter，
+避免大量离散 token 索引。
+```
+
+这比简单 block-wise top-k 更自然：
+
+- token-level score 保留精细判别；
+- segment 合并提供 GPU 友好的连续执行；
+- segment 长度可自适应，不被固定正方形 block 限制；
+- 论文表述也更优雅：从 semantic stability 到 reusable visual segments。
