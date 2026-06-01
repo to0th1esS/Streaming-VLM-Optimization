@@ -32,6 +32,7 @@ def parse_args():
     parser.add_argument("--skip-feature-threshold", type=float, default=0.9999)
     parser.add_argument("--dense-feature-threshold", type=float, default=0.98)
     parser.add_argument("--anchor-mode", default="dual", choices=["dual", "rolling_only", "long_only"])
+    parser.add_argument("--anchor-mix-mode", default="where", choices=["where", "scatter"])
     parser.add_argument("--segment-max-gap", type=int, default=1)
     parser.add_argument("--min-segment-len", type=int, default=2)
     parser.add_argument("--drift-per-frame", type=float, default=0.015)
@@ -129,6 +130,7 @@ def main():
         skip_feature_threshold=args.skip_feature_threshold,
         dense_feature_threshold=args.dense_feature_threshold,
         anchor_mode=args.anchor_mode,
+        anchor_mix_mode=args.anchor_mix_mode,
         segment_max_gap=args.segment_max_gap,
         min_segment_len=args.min_segment_len,
         warmup_frames=2,
@@ -193,6 +195,7 @@ def main():
         "skip_feature_threshold": args.skip_feature_threshold,
         "dense_feature_threshold": args.dense_feature_threshold,
         "anchor_mode": args.anchor_mode,
+        "anchor_mix_mode": args.anchor_mix_mode,
         "segment_max_gap": args.segment_max_gap,
         "min_segment_len": args.min_segment_len,
         "dense_latency_ms_mean": mean(dense_latency_rows, "latency_ms"),

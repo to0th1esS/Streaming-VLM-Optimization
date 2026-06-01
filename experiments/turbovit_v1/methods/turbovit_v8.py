@@ -36,6 +36,7 @@ def _layer_kv_reuse_sparse_from_prefix(
     start_layer: int,
     dynamic_indices: torch.Tensor,
     use_rolling_tokens: torch.Tensor,
+    anchor_mix_mode: str,
 ) -> Tuple[torch.Tensor, List[Dict[str, torch.Tensor]], float, float, float, float]:
     next_caches = list(prefix_caches)
     selector_ms = 0.0
@@ -60,8 +61,8 @@ def _layer_kv_reuse_sparse_from_prefix(
         q_selected, key_selected, value_selected = block._project_qkv(normed_selected)
         kv_projection_ms += (perf_counter() - kv_start) * 1000.0
 
-        base_key = _mix_anchor_cache("key", rolling_cache, long_cache, use_rolling_tokens)
-        base_value = _mix_anchor_cache("value", rolling_cache, long_cache, use_rolling_tokens)
+        base_key = _mix_anchor_cache("key", rolling_cache, long_cache, use_rolling_tokens, anchor_mix_mode)
+        base_value = _mix_anchor_cache("value", rolling_cache, long_cache, use_rolling_tokens, anchor_mix_mode)
         key = base_key.scatter(1, gather_idx, key_selected)
         value = base_value.scatter(1, gather_idx, value_selected)
 
@@ -78,7 +79,7 @@ def _layer_kv_reuse_sparse_from_prefix(
         mlp_selected = block.mlp(block.norm2(hidden_selected))
         output_selected = hidden_selected + mlp_selected
 
-        base_output = _mix_anchor_cache("output", rolling_cache, long_cache, use_rolling_tokens)
+        base_output = _mix_anchor_cache("output", rolling_cache, long_cache, use_rolling_tokens, anchor_mix_mode)
         hidden_states = base_output.scatter(1, gather_idx, output_selected)
         sparse_compute_ms += (perf_counter() - sparse_start) * 1000.0
 
@@ -102,13 +103,16 @@ def _mix_anchor_cache(
     rolling_cache: Dict[str, torch.Tensor],
     long_cache: Dict[str, torch.Tensor],
     use_rolling_tokens: torch.Tensor,
+    anchor_mix_mode: str,
 ) -> torch.Tensor:
-    if use_rolling_tokens.shape[0] != 1:
+    if anchor_mix_mode == "where" or use_rolling_tokens.shape[0] != 1:
         return torch.where(
             use_rolling_tokens.unsqueeze(-1),
             rolling_cache[cache_name],
             long_cache[cache_name],
         ).clone()
+    if anchor_mix_mode != "scatter":
+        raise ValueError("anchor_mix_mode must be one of: where, scatter")
 
     rolling_ratio = float(use_rolling_tokens.float().mean().item())
     if rolling_ratio >= 0.5:
@@ -140,6 +144,7 @@ def encode_stream_turbovit_v8(
     skip_feature_threshold: float = 0.9999,
     dense_feature_threshold: float = 0.98,
     anchor_mode: str = "dual",
+    anchor_mix_mode: str = "where",
     segment_max_gap: int = 1,
     min_segment_len: int = 2,
     warmup_frames: int = 2,
@@ -154,6 +159,8 @@ def encode_stream_turbovit_v8(
         raise ValueError("dense_feature_threshold must be <= skip_feature_threshold")
     if anchor_mode not in {"dual", "rolling_only", "long_only"}:
         raise ValueError("anchor_mode must be one of: dual, rolling_only, long_only")
+    if anchor_mix_mode not in {"where", "scatter"}:
+        raise ValueError("anchor_mix_mode must be one of: where, scatter")
 
     model.eval()
     device = next(model.parameters()).device
@@ -267,6 +274,7 @@ def encode_stream_turbovit_v8(
                     start_layer,
                     dyn_indices,
                     use_rolling,
+                    anchor_mix_mode,
                 )
                 rolling_embed = current_embed.detach()
                 rolling_output = output.detach()
