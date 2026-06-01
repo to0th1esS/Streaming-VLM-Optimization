@@ -16,11 +16,14 @@ def huggingface_forward(forward):
         **kwargs,
     ):
         assert not output_attentions
+        num_heads = getattr(self, "num_heads", self.config.num_attention_heads)
+        num_key_value_heads = getattr(self, "num_key_value_heads", self.config.num_key_value_heads)
+        head_dim = getattr(self, "head_dim", self.config.hidden_size // num_heads)
         ret = forward(
             self, hidden_states, hidden_states,
             position_ids, use_cache, past_key_value,
             self.q_proj, self.k_proj, self.v_proj, self.o_proj, 
-            self.head_dim, self.num_heads, self.num_key_value_heads
+            head_dim, num_heads, num_key_value_heads
         )
         if use_cache:
             o, pkv = ret
