@@ -171,3 +171,39 @@ StreamingBench 和 OVO-Bench 更适合作为后续大规模论文评测：
 Dual-anchor semantic stability is a unified signal
 for visual recomputation, visual token writing, and LLM cache retrieval.
 ```
+
+---
+
+## 2026-06-01 状态更新：真实 VLM tiny QA 已跑通
+
+在接入 RVS 真实视频前，已先用 `Big Buck Bunny` 构造了 3 个 tiny QA sanity 问题，并在远程 A100 上跑通：
+
+```text
+model: LLaVA-OneVision-Qwen2-0.5B
+backend: ReKV streaming QA
+video: data/turbovit_v1/big_buck_bunny.mp4
+annotation: data/tiny_streaming_qa/big_buck_bunny_qa.json
+```
+
+已验证两条链路：
+
+| mode | status | answer sanity | note |
+| --- | --- | --- | --- |
+| dense ViT | pass | 3/3 语义正确 | 真实 LLaVA-OneVision + ReKV 链路可用 |
+| current `vit_patch_hf` sparse | pass | 3/3 语义基本正确 | sparse 入口可被真实 VLM 调用 |
+
+但当前主代码 `vit_patch_hf` 仍是入口版，不是最终论文候选实现。计时显示在 tiny QA 上它没有加速：
+
+| setting | dense video encode | sparse video encode | conclusion |
+| --- | ---: | ---: | --- |
+| 0.25 fps / 4 encoded frames | 0.283s | 0.368s | 输入太短，固定开销占主导 |
+| 1 fps / 16 encoded frames | 0.572s | 1.126s | 朴素 token scatter sparse path 不够 GPU 友好 |
+
+因此后续 RVS 小子集不应直接使用主代码入口版作为最终方法，而应接入 `experiments/turbovit_v1` 中更接近论文主线的 dual-anchor / segment-aware 逻辑。
+
+下一步数据侧工作：
+
+1. 保持 annotation subset 由本地下载后同步到远程；
+2. 在远程 `/home/mllm/datasets` 或同级数据盘准备 3-5 个真实 RVS clip；
+3. 优先跑 dense VLM QA，确认 benchmark 样本和 prompt 格式正确；
+4. 再接入 dual-anchor Turbo-ViT + visual token writing policy，比较答案、latency 和 token/cache 写入比例。

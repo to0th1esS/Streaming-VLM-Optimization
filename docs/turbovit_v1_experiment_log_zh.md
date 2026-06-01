@@ -2406,3 +2406,106 @@ Dual-Anchor Semantic Stability
 2. 视觉 token 写入；
 3. LLM cache 检索；
 4. QA 任务保真控制。
+
+---
+
+## 2026-06-01：真实 LLaVA-OneVision tiny QA 闭环验证
+
+### 目标
+
+这一轮不是验证最终 Turbo-ViT 方法，而是先确认：
+
+1. 当前仓库中的 LLaVA-OneVision + ReKV streaming QA 链路可以在远程 A100 上跑通；
+2. `vit_patch_hf` 的 ViT sparse 入口可以被真实 VLM 调用；
+3. sparse 后的答案是否在极小 QA sanity 上立即崩坏；
+4. 为后续 RVS / OVO / StreamingBench 小规模实验补齐端到端计时字段。
+
+### 工程修复
+
+| 文件 | 修改 |
+| --- | --- |
+| `model/patch.py` | 兼容新版 transformers 中 Qwen2 RoPE 从 attention 层迁移到 model 层的情况 |
+| `model/patch.py` | 兼容新版 `Qwen2Attention` 不再暴露 `num_heads` / `num_key_value_heads` 属性，改从 config 回退读取 |
+| `model/patch.py` | 兼容新版 Qwen2 decoder layer 不再返回 KV cache 的协议，将 ReKV cache 暂存在 attention 模块上再由外层读取 |
+| `model/llava_onevision_rekv.py` | 将 LLaVA-OneVision 每帧视觉 token block size 从 60 修正为 196 |
+| `video_qa/rekv_stream_vqa.py` | 增加 streaming QA 分段计时：video load、init prompt、incremental video encode、QA decode、累计耗时 |
+
+其中 `block_size=196` 是关键修正。失败日志中 `global_k.shape=[1, 14, 392, 64]`，392 对应 2 帧乘以 196 token；原先的 60 会导致 ReKV block 检索断言失败。
+
+### 实验设置
+
+```text
+model: LLaVA-OneVision-Qwen2-0.5B
+vision tower: SigLIP / OneVision vision tower
+backend: ReKV streaming QA
+video: data/turbovit_v1/big_buck_bunny.mp4
+tiny QA: scripts/prepare_tiny_streaming_qa.py 生成的 3 个 sanity 问题
+remote GPU: A100
+sparse patch: model/vit_patch.py 当前主代码入口版
+cache_interval: 2
+update_token_ratio: 0.25
+retrieve_size: 4
+retrieve_chunk_size: 1
+debug: true
+```
+
+### 0.25 fps 结果
+
+| mode | loaded frames | encoded frames until last QA | cumulative video encode | last elapsed | answer sanity |
+| --- | ---: | ---: | ---: | ---: | --- |
+| dense | 15 | 4 | 0.283s | 2.433s | 3/3 语义正确 |
+| sparse | 15 | 4 | 0.368s | 2.480s | 3/3 语义正确 |
+
+结论：在极短输入下，sparse 入口功能稳定，但没有加速。4 个实际编码帧太少，selector、cache、scatter 等固定开销占主导。
+
+### 1 fps 结果
+
+| mode | loaded frames | encoded frames until last QA | cumulative video encode | last elapsed | answer sanity |
+| --- | ---: | ---: | ---: | ---: | --- |
+| dense | 60 | 16 | 0.572s | 3.379s | 3/3 语义正确 |
+| sparse | 60 | 16 | 1.126s | 4.402s | 3/3 语义基本正确 |
+
+逐问题 video encode：
+
+| mode | Q1 new frames | Q1 encode | Q2 new frames | Q2 encode | Q3 new frames | Q3 encode |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| dense | 8 | 0.331s | 4 | 0.131s | 4 | 0.110s |
+| sparse | 8 | 0.585s | 4 | 0.271s | 4 | 0.270s |
+
+结论：当前主代码 `vit_patch_hf` 的稀疏入口在真实 LLaVA-OneVision 上是可运行的，但不是当前论文候选的高效实现。它逐层计算完整 K、选择 token、clone/reference、scatter 混合输出，真实 GPU 上这些开销超过了少算 Q/V/MLP 的收益。
+
+### 与前面 Turbo-ViT v5/v7/v8 的关系
+
+这组 QA 实验不能和 v5/v7/v8 的 CLIP ViT-L 原型加速数值直接等同，原因是：
+
+1. 主代码 `model/vit_patch.py` 是最早的隔离入口版，只保留 ViT sparse update 功能和后处理入口；
+2. 论文候选逻辑目前在 `experiments/turbovit_v1` 中，尤其是 v5 dual-anchor、v7 segment-aware routing、v8 K/V reuse；
+3. QA 链路验证的是“真实 VLM 端到端可接入”和“任务答案是否立刻失真”，不是最终速度上界；
+4. 该结果再次确认：最终方法不能停留在朴素 token sparse scatter，而要把 dual-anchor semantic stability 进一步转化为 block/segment 级执行和后端 cache 写入控制。
+
+### 方法设计启示
+
+```text
+当前主代码 sparse patch:
+  功能可用
+  QA sanity 稳定
+  速度不够
+
+下一步论文方法:
+  不应呈现为“逐层 token scatter 工程优化”
+  应呈现为“语义稳定性驱动的统一流式视觉记忆机制”
+```
+
+也就是说，最终 paper 中应弱化中间工程尝试，保留为 insight：
+
+1. 短时流式视频中存在大量稳定视觉 token，但逐层逐 token 判别会吃掉收益；
+2. 单参考帧会 stale，dual-anchor 能提供 long-term semantic prior 与 rolling correction；
+3. token 级选择信号本身还可以服务于三个位置：ViT recomputation、visual token writing、LLM cache retrieval；
+4. 真正的速度提升应来自减少进入 sparse path 的次数、减少写入后端 cache 的 token 数，以及 block/segment 级 GPU 友好执行。
+
+### 下一步
+
+1. 将 `experiments/turbovit_v1` 中 v5/v7 的 dual-anchor/segment stability 接到真实 LLaVA-OneVision vision tower，而不是继续使用主代码入口版；
+2. 保留当前 `vit_output_postprocess` 入口，把 visual token writing / pruning 作为后处理实验位点；
+3. 用 tiny QA 先做任务保真 sanity，再准备 RVS 小子集真实视频；
+4. 在 RVS 小子集上记录 dense QA answer、Turbo-ViT answer、video encode latency、QA decode latency、visual token 写入比例、ReKV retrieval block 命中变化。
