@@ -34,12 +34,28 @@ def _forward_to_gate(
     model,
     frame: torch.Tensor,
     gate_layer: int,
-) -> torch.Tensor:
+) -> Tuple[torch.Tensor, List[Dict[str, torch.Tensor]]]:
     hidden_states = model.embed(frame)
+    caches = []
     last_idx = min(gate_layer, len(model.blocks) - 1)
     for layer_idx in range(last_idx + 1):
-        hidden_states, _ = model.blocks[layer_idx].forward_with_cache(hidden_states)
-    return hidden_states
+        hidden_states, cache = model.blocks[layer_idx].forward_with_cache(hidden_states)
+        caches.append(cache)
+    return hidden_states, caches
+
+
+def _finish_from_gate(
+    model,
+    hidden_states: torch.Tensor,
+    prefix_caches: List[Dict[str, torch.Tensor]],
+    gate_layer: int,
+) -> Tuple[torch.Tensor, List[Dict[str, torch.Tensor]]]:
+    caches = list(prefix_caches)
+    start_layer = min(gate_layer, len(model.blocks) - 1) + 1
+    for layer_idx in range(start_layer, len(model.blocks)):
+        hidden_states, cache = model.blocks[layer_idx].forward_with_cache(hidden_states)
+        caches.append(cache)
+    return model.norm(hidden_states), caches
 
 
 def _cache_gate_output(caches: List[Dict[str, torch.Tensor]], gate_layer: int) -> Optional[torch.Tensor]:
@@ -117,7 +133,7 @@ def encode_stream_turbovit_v3(
             is_reference = True
         elif frame_drift <= skip_threshold and ref_output is not None:
             gate_start = perf_counter()
-            gate_output = _forward_to_gate(model, frame, feature_gate_layer)
+            gate_output, gate_caches = _forward_to_gate(model, frame, feature_gate_layer)
             if rolling_gate_output is not None:
                 feature_gate_cos_to_rolling = _cosine(gate_output, rolling_gate_output)
             if long_gate_output is not None:
@@ -131,7 +147,12 @@ def encode_stream_turbovit_v3(
                 is_reference = False
                 dynamic_ratio_observed = 0.0
             else:
-                output, ref_caches = model.forward_with_caches(frame)
+                output, ref_caches = _finish_from_gate(
+                    model,
+                    gate_output,
+                    gate_caches,
+                    feature_gate_layer,
+                )
                 ref_embed = current_embed.detach()
                 ref_output = output.detach()
                 rolling_gate_output = _cache_gate_output(ref_caches, feature_gate_layer)
