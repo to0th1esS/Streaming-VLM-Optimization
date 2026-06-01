@@ -2078,3 +2078,45 @@ LLM side:  REKV-style streaming cache management
 哪些 segment 可以只更新 ViT 表征但不触发长期 KV 写入？
 哪些稳定 segment 可以沿用旧视觉 token 与旧语言 KV？
 ```
+
+### 轻量后端 cache policy simulation
+
+为了不直接把完整 VLM benchmark 引入当前闭环，先做了一个轻量模拟：
+
+```text
+如果后端语言模型支持复用稳定视觉 token 的 KV，
+那么每帧实际需要重新写入多少视觉 token？
+```
+
+设置：
+
+```text
+visual_tokens_per_frame: 576
+输入: v5/v7 逐帧 decision 与 dynamic_ratio_observed
+规则:
+  dense  帧写入 576 tokens
+  skip   帧写入 0 tokens
+  sparse 帧写入 dynamic_ratio_observed * 576 tokens
+```
+
+结果：
+
+| method | config | ViT speedup | mean cosine | estimated visual token reduction |
+| --- | --- | ---: | ---: | ---: |
+| v5 | N=16, ratio 0.80->1.00 | 1.033x | 0.992580 | 7.2% |
+| v7 | N=16, ratio 0.80->1.00 | 1.000x | 0.994970 | 6.0% |
+| v5 | N=16, ratio 0.60->0.95 | 1.081x | 0.983931 | 13.7% |
+| v7 | N=16, ratio 0.60->0.95 | 1.034x | 0.989186 | 11.6% |
+
+这说明：
+
+1. 前端复用信号确实可以转化为后端视觉 token 写入减少；
+2. v5 更激进，token reduction 更高，但质量更低；
+3. v7 更稳，token reduction 略低，但保真明显更好；
+4. 接入 REKV 的价值不是简单叠加加速，而是用同一个 semantic stability 信号同时控制视觉重算与语言 KV 写入。
+
+因此，下一阶段应该开始做 ViT+REKV 联合验证，但顺序应保持：
+
+```text
+cache policy simulation -> 小规模真实 VLM QA -> 大规模 benchmark
+```

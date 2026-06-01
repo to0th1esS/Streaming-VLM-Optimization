@@ -222,3 +222,43 @@ experiments/turbovit_v1/scripts/run_cache_policy_sim.py
 而是从前端语义稳定性出发，
 逐步推出视觉 segment 复用与语言 KV cache 管理的统一机制。
 ```
+
+## 2026-06-01 轻量模拟结果
+
+已实现：
+
+```text
+experiments/turbovit_v1/eval/cache_policy_sim.py
+experiments/turbovit_v1/scripts/run_cache_policy_sim.py
+```
+
+模拟规则：
+
+```text
+dense  帧：写入完整视觉 tokens
+skip   帧：不写入新视觉 tokens，复用已有视觉 KV
+sparse 帧：只写入 dynamic_ratio_observed 对应的新视觉 tokens
+```
+
+真实视频 96 帧结果：
+
+| method | config | ViT speedup | mean cosine | visual token reduction |
+| --- | --- | ---: | ---: | ---: |
+| v5 | N=16, ratio 0.80->1.00 | 1.033x | 0.992580 | 7.2% |
+| v7 | N=16, ratio 0.80->1.00 | 1.000x | 0.994970 | 6.0% |
+| v5 | N=16, ratio 0.60->0.95 | 1.081x | 0.983931 | 13.7% |
+| v7 | N=16, ratio 0.60->0.95 | 1.034x | 0.989186 | 11.6% |
+
+解释：
+
+- v5 给出更高 token reduction，但质量损失更明显；
+- v7 给出更稳的视觉表示，适合作为后端 cache policy 的更安全输入；
+- 这说明联合设计不是“把两个加速方法相加”，而是要在统一的 semantic stability 下做前后端协同。
+
+下一步建议：
+
+```text
+把 cache policy simulation 接到 REKV 的 block 管理侧，
+先记录 visual segment stability 与 retrieved block 的对应关系，
+再启动真实 VLM QA。
+```
