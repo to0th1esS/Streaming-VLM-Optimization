@@ -30,12 +30,17 @@ class TurboV7FrameResult(TurboFrameResult):
     segment_expansion_ratio: float = 1.0
 
 
-def _infer_patch_grid(seq_len: int) -> int:
+def _infer_patch_grid(seq_len: int) -> Tuple[int, int]:
+    grid = isqrt(seq_len)
+    if grid * grid == seq_len:
+        return grid, 0
     patch_tokens = seq_len - 1
     grid = isqrt(patch_tokens)
     if grid * grid != patch_tokens:
-        raise ValueError(f"expected square patch grid after CLS token, got {patch_tokens} patch tokens")
-    return grid
+        raise ValueError(
+            f"expected square patch grid with or without CLS token, got seq_len={seq_len}"
+        )
+    return grid, 1
 
 
 def _segments_from_mask(mask: torch.Tensor, max_gap: int, min_segment_len: int) -> Tuple[List[Tuple[int, int, int]], int]:
@@ -89,27 +94,27 @@ def _select_dynamic_segments(
         raise ValueError("min_segment_len must be >= 1")
 
     seq_len = token_stability.shape[1]
-    grid = _infer_patch_grid(seq_len)
-    patch_count = seq_len - 1
+    grid, prefix_tokens = _infer_patch_grid(seq_len)
+    patch_count = seq_len - prefix_tokens
     target_patches = max(1, min(patch_count, int(round(patch_count * dynamic_ratio))))
-    patch_scores = token_stability[:, 1:]
+    patch_scores = token_stability[:, prefix_tokens:]
     selected = torch.topk(patch_scores, k=target_patches, dim=1, largest=False).indices[0]
     mask_flat = torch.zeros(patch_count, dtype=torch.bool, device=token_stability.device)
     mask_flat[selected] = True
     mask = mask_flat.view(grid, grid)
 
     segments, raw_count = _segments_from_mask(mask, segment_max_gap, min_segment_len)
-    dynamic_tokens = {0}
+    dynamic_tokens = set(range(prefix_tokens))
     segment_lens = []
     for row, start, end in segments:
         segment_lens.append(end - start)
         for col in range(start, end):
-            dynamic_tokens.add(1 + row * grid + col)
+            dynamic_tokens.add(prefix_tokens + row * grid + col)
 
     dynamic_indices = torch.tensor(sorted(dynamic_tokens), device=token_stability.device).view(1, -1)
     segment_count = len(segments)
     mean_segment_len = float(sum(segment_lens) / segment_count) if segment_count else 0.0
-    expansion_ratio = float((dynamic_indices.numel() - 1) / raw_count) if raw_count else 1.0
+    expansion_ratio = float((dynamic_indices.numel() - prefix_tokens) / raw_count) if raw_count else 1.0
     return dynamic_indices, segment_count, mean_segment_len, expansion_ratio
 
 
