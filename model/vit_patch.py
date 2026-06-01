@@ -32,7 +32,9 @@ def vit_patch_hf(model, **kwargs):
         model.semantic_stream_compute_gate = False
         model.semantic_stream_gate = None
 
-    _apply_siglip_acceleration(model.vision_tower, model.inference_context)
+    model.enable_vit_layer_sparse = kwargs.get("enable_vit_layer_sparse", True)
+    if model.enable_vit_layer_sparse:
+        _apply_siglip_acceleration(model.vision_tower, model.inference_context)
 
     if hasattr(model, "_get_video_features") and not hasattr(model, "_original_get_video_features"):
         model._original_get_video_features = model._get_video_features

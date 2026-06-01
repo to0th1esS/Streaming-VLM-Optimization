@@ -197,6 +197,7 @@ def work(QA_CLASS):
     parser.add_argument("--retrieve_size", type=int, default=64)
     parser.add_argument("--retrieve_chunk_size", type=int, default=1)
     parser.add_argument("--enable_vit_sparse", type=str2bool, nargs='?', const=True, default=True)
+    parser.add_argument("--enable_vit_layer_sparse", type=str2bool, nargs='?', const=True, default=True)
     parser.add_argument("--vit_cache_interval", type=int, default=2)
     parser.add_argument("--vit_update_token_ratio", type=float, default=0.25)
     parser.add_argument("--enable_semantic_stream", type=str2bool, nargs='?', const=True, default=False)
@@ -233,6 +234,7 @@ def work(QA_CLASS):
                 "vit_sparse_config": {
                     "cache_interval": args.vit_cache_interval,
                     "update_token_ratio": args.vit_update_token_ratio,
+                    "enable_vit_layer_sparse": args.enable_vit_layer_sparse,
                     "enable_semantic_stream": args.enable_semantic_stream,
                     "enable_semantic_compute_gate": args.enable_semantic_compute_gate,
                     "semantic_refresh_interval": args.semantic_refresh_interval,
