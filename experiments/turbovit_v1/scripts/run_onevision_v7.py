@@ -20,6 +20,7 @@ def parse_args():
     parser.add_argument("--video-path", default="data/turbovit_v1/big_buck_bunny.mp4")
     parser.add_argument("--output-dir", default="results/turbovit_v1/onevision_v7")
     parser.add_argument("--num-frames", type=int, default=32)
+    parser.add_argument("--start-frame", type=int, default=0)
     parser.add_argument("--frame-stride", type=int, default=8)
     parser.add_argument("--refresh-interval", type=int, default=8)
     parser.add_argument("--sparse-ratio-min", type=float, default=0.55)
@@ -52,9 +53,11 @@ def resolve_dtype(name: str) -> torch.dtype:
     return torch.float32
 
 
-def load_video_uint8(video_path: Path, num_frames: int, frame_stride: int):
+def load_video_uint8(video_path: Path, num_frames: int, start_frame: int, frame_stride: int):
     frames = []
     for frame_idx, frame in enumerate(iio.imiter(video_path)):
+        if frame_idx < start_frame:
+            continue
         if frame_idx % frame_stride != 0:
             continue
         if frame.ndim == 2:
@@ -116,7 +119,7 @@ def main():
     vision_tower = full_model.vision_tower.to(device=device, dtype=dtype)
     model = HFSigLIPVisionWrapper(vision_tower).eval()
 
-    raw_frames = load_video_uint8(Path(args.video_path), args.num_frames, args.frame_stride)
+    raw_frames = load_video_uint8(Path(args.video_path), args.num_frames, args.start_frame, args.frame_stride)
     pixel_values = processor.video_processor(raw_frames, return_tensors="pt").pixel_values_videos[0]
 
     dense_results = encode_stream_dense(model, pixel_values, warmup_frames=2)
@@ -180,6 +183,7 @@ def main():
         "vision_tower": "LLaVA-OneVision SigLIP",
         "video_path": args.video_path,
         "num_frames": args.num_frames,
+        "start_frame": args.start_frame,
         "frame_stride": args.frame_stride,
         "device": str(device),
         "dtype": str(dtype),
