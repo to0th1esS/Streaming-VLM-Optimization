@@ -2120,3 +2120,140 @@ visual_tokens_per_frame: 576
 ```text
 cache policy simulation -> 小规模真实 VLM QA -> 大规模 benchmark
 ```
+
+## 2026-06-01：v8 Layer-Aware Static K/V Reuse
+
+### 动机
+
+前面的问题是：我们是否已经利用了 ViT 内部层间特性？
+
+答案是：
+
+```text
+v1 利用了，但太重：每层都重新判断动态 token；
+v5/v7 减少了判断次数：只在 probe layer 判断一次；
+但 v5/v7 后续层仍然偏 dense：每层仍对完整 hidden states 做 Q/K/V projection。
+```
+
+因此 v8 验证一个更深入的层内复用假设：
+
+```text
+动态 token mask 不需要每层重新判断；
+静态 token 的 K/V 也不应该每层重新投影。
+```
+
+### 方法
+
+v8 在 reference / rolling / long anchor 中额外缓存每层：
+
+```text
+key
+value
+output
+```
+
+对于当前帧：
+
+1. 前几层 probe；
+2. 用 dual-anchor semantic stability 得到动态 segment；
+3. 后续层只对动态 segment 计算 Q/K/V；
+4. 静态 token 的 K/V 从 rolling/long anchor cache 复用；
+5. 动态 query attend 到 mixed K/V；
+6. 静态 output 继续复用 anchor output。
+
+这一步对应的论文概念是：
+
+```text
+Layer-Aware Dual-Anchor K/V Reuse
+```
+
+### 实验设置
+
+```text
+model: CLIP ViT-L/14@336
+video: Big Buck Bunny real video
+num_frames: 96
+frame_stride: 1
+refresh_interval: 16
+probe_layer: 2
+anchor_mode: dual
+segment config: gap=1, min_len=2
+device: remote A100
+```
+
+### 结果
+
+| method | config | speedup | mean cosine | sparse latency | sparse compute | KV projection |
+| --- | --- | ---: | ---: | ---: | ---: | ---: |
+| v7 segment | 0.80->1.00 | 1.000x | 0.994970 | 37.798 ms | 6.427 ms | full QKV |
+| v8 layer-KV | 0.80->1.00 | 0.995x | 0.994917 | 38.096 ms | 9.404 ms | 1.714 ms |
+| v7 segment | 0.60->0.95 | 1.034x | 0.989186 | 35.262 ms | 6.536 ms | full QKV |
+| v8 layer-KV | 0.60->0.95 | 1.026x | 0.989014 | 35.519 ms | 9.524 ms | 1.730 ms |
+
+同时测试了一个 anchor cache mixing 优化：
+
+```text
+where mode:
+  full torch.where over rolling/long cache
+
+scatter mode:
+  使用多数 anchor 作为 base，只 scatter 少数 anchor token
+```
+
+结果 scatter mode 更慢：
+
+```text
+0.80->1.00: speedup 0.891x
+0.60->0.95: speedup 0.929x
+```
+
+说明小索引 `nonzero/scatter` 的 kernel overhead 比 full `where` 更差。
+
+### 分析
+
+v8 证明了一个很重要的点：
+
+```text
+从数学计算量上看，复用静态 K/V 是合理的；
+但在当前 PyTorch 原型中，混合 K/V cache 的内存操作成本超过了省下来的 Q/K/V projection。
+```
+
+也就是说，层间 K/V 复用这个方向是方法上合理的，但不能用当前这种逐层 Python/PyTorch tensor 拼接实现来证明速度。
+
+这进一步说明：
+
+1. **减少动态 token 判断次数已经完成**
+   - v5/v7/v8 都只在 probe layer 判断一次；
+   - 不再是 v1 的逐层判别。
+
+2. **真正的瓶颈已经转移**
+   - 不是 selector；
+   - 不是 semantic stability；
+   - 而是 mixed K/V construction、scatter、非连续 token kernel。
+
+3. **层间特性仍然值得保留为论文方法**
+   - 因为 K/V 复用提供了清晰的理论计算节省；
+   - 但需要 fused segment execution 或者和后端 REKV cache 共同设计。
+
+### 方向结论
+
+v8 不应作为最终工程速度版本，但它给最终方法提供了一个关键 insight：
+
+```text
+ViT 内部层间复用不应该表现为每层重新选择 token；
+而应该表现为一次 semantic routing 后的跨层 K/V propagation。
+```
+
+下一步如果继续前端，应做：
+
+```text
+fused segment K/V reuse
+```
+
+如果推进系统，应做：
+
+```text
+ViT segment stability -> LLM/REKV cache write/retrieval policy
+```
+
+目前更推荐后者，因为当前 PyTorch 前端原型已经反复显示：选择策略越来越合理，但单靠非融合 sparse tensor 操作很难释放真实速度。
