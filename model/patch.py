@@ -30,6 +30,10 @@ def huggingface_forward(forward):
         else:
             o = ret
             pkv = None
+        self._rekv_last_past_key_value = pkv
+
+        if "cache_position" in kwargs or "position_embeddings" in kwargs:
+            return o, None
 
         return o, None, pkv
 
@@ -115,7 +119,11 @@ def patch_hf(
             hidden_states = layer_outputs[0]
 
             if use_cache:
-                _cache = layer_outputs[2 if output_attentions else 1]
+                cache_index = 2 if output_attentions else 1
+                if len(layer_outputs) > cache_index:
+                    _cache = layer_outputs[cache_index]
+                else:
+                    _cache = getattr(decoder_layer.self_attn, "_rekv_last_past_key_value", None)
                 pkv = pkv + (_cache,)
 
             if output_attentions:
