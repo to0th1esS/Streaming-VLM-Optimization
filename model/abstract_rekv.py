@@ -16,6 +16,9 @@ class Abstract_ReKV:
 
     def clear_cache(self):
         self.kv_cache = None
+        semantic_gate = getattr(self, "semantic_stream_gate", None)
+        if semantic_gate is not None:
+            semantic_gate.reset()
         torch.cuda.empty_cache()
         torch.cuda.ipc_collect()
 
@@ -32,6 +35,8 @@ class Abstract_ReKV:
     def _encode_video_chunk(self, video_chunk):
         pixel_values_videos = self.processor.video_processor(video_chunk, return_tensors="pt").pixel_values_videos.to(self.device, self.dtype)  # (1, Nv, 3, H, W)
         video_features = self._get_video_features(pixel_values_videos)  # (1, Nv*196, D)
+        if video_features.shape[1] == 0:
+            return
         assert self.n_local >= video_features.shape[1], f'n_local: {self.n_local}, video_features: {video_features.shape[1]}'
 
         output = self.language_model(inputs_embeds=video_features, past_key_values=self.kv_cache, use_cache=True, return_dict=True)

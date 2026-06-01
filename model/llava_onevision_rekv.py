@@ -151,6 +151,7 @@ def load_model(model_path='model_zoo/LLaVA/llava-onevision-qwen2-7b-ov-hf',
             'cache_interval': 2,
             'update_token_ratio': 0.25,
             'vit_sparse_encode_chunk_size': 1,
+            'enable_semantic_stream': False,
         }
         if vit_sparse_config:
             vit_config.update(vit_sparse_config)

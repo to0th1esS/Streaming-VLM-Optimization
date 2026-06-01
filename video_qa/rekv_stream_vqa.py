@@ -86,6 +86,8 @@ class ReKVStreamVQA(BaseVQA):
             qa_results = self.video_open_qa(question, max_new_tokens=256)
             self._sync_cuda()
             qa_sec = time.perf_counter() - qa_start
+            semantic_gate = getattr(self.qa_model, "semantic_stream_gate", None)
+            semantic_stats = getattr(semantic_gate, "stats", {}) if semantic_gate is not None else {}
             self.record[(self.retrieve_size, self.chunk_size)].append({
                 'video_id': video_sample['video_id'],
                 'question': question,
@@ -101,6 +103,11 @@ class ReKVStreamVQA(BaseVQA):
                 'cumulative_encode_video_sec': cumulative_encode_video_sec,
                 'qa_sec': qa_sec,
                 'elapsed_video_sec': time.perf_counter() - video_timer_start,
+                'semantic_input_frames': semantic_stats.get("input_frames", 0),
+                'semantic_kept_frames': semantic_stats.get("kept_frames", 0),
+                'semantic_skipped_frames': semantic_stats.get("skipped_frames", 0),
+                'semantic_input_tokens': semantic_stats.get("input_tokens", 0),
+                'semantic_written_tokens': semantic_stats.get("written_tokens", 0),
             })
  
 

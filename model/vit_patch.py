@@ -3,6 +3,7 @@ import types
 from logzero import logger
 
 from model.vision_accelerator import InferenceContext
+from model.vision_accelerator import SemanticStreamGate
 from model.vision_accelerator import forward_siglip_adaptive
 from model.vision_accelerator import new_siglip_sdpa_attn_forward
 
@@ -19,6 +20,14 @@ def vit_patch_hf(model, **kwargs):
         "vit_output_postprocess",
         _identity_vit_output_postprocess,
     )
+    if kwargs.get("enable_semantic_stream", False):
+        model.semantic_stream_gate = SemanticStreamGate(
+            refresh_interval=kwargs.get("semantic_refresh_interval", cache_interval),
+            skip_patch_threshold=kwargs.get("semantic_skip_threshold", 0.01),
+        )
+        model.vit_output_postprocess = model.semantic_stream_gate
+    else:
+        model.semantic_stream_gate = None
 
     _apply_siglip_acceleration(model.vision_tower, model.inference_context)
 
@@ -74,7 +83,9 @@ def _new_get_video_features(self, pixel_values_videos):
         pixel_values_videos=pixel_values_videos,
         selected_video_feature=selected_video_feature,
     )
-    video_features = video_features.reshape(batch_size, frames * video_features.shape[1], -1)
+    if video_features.shape[0] == batch_size:
+        return video_features
+    video_features = video_features.reshape(batch_size, -1, video_features.shape[-1])
     return video_features
 
 
