@@ -3516,3 +3516,37 @@ Only anchor-changing or query-relevant semantic events are encoded, written, and
 2. 增加真实 streaming QA 小子集，优先 RVS-Ego / RVS-Movie；如果视频资产暂时不可用，则先建立公开视频 sanity set。
 3. 记录实际 ReKV cache block 数、写入 token 数和检索耗时，把“语义流稀疏化”从 ViT 侧扩展到后端 cache 侧。
 4. 在更长帧序列上扫描更激进配置，例如 `refresh=16/32`、更高 skip threshold，并用 QA 约束决定可接受边界。
+
+### 7B repeat 稳定性补充
+
+为避免单次 GPU 调度和 warm-up 噪声影响判断，对当前最优代表点补跑 3 次 repeat：
+
+```text
+model: LLaVA-OneVision-Qwen2-7B
+refresh_interval: 8
+skip_threshold: 0.03
+compute_gate: true
+layer_sparse: false
+repeats: 3
+```
+
+聚合结果：
+
+| metric | value |
+| --- | ---: |
+| QA pass rate | 100% |
+| QA pass count mean | 3/3 |
+| kept frames mean | 5/16 |
+| token writing reduction mean | 68.75% |
+| encode mean | 0.498s |
+| encode median | 0.502s |
+| encode p90 | 0.512s |
+
+结果文件：
+
+```text
+results/semantic_stream_sweep/tiny_7b_compute_embed_reuse_repeats3/summary.csv
+results/semantic_stream_sweep/tiny_7b_compute_embed_reuse_repeats3/aggregate_summary.csv
+```
+
+这说明 embedding reuse 后的 7B semantic stream 代表点是稳定的，不是单次偶然低延迟。相对当前 dense 7B 的 0.771s，median encode speedup 约为 `1.53x`，encode 时间下降约 `34.8%`。
