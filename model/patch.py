@@ -35,11 +35,13 @@ def huggingface_forward(forward):
 
 def patch_hf(
     model,
-    attn_kwargs: dict = {},
+    attn_kwargs: dict = None,
     base = None, 
     distance_scale = None,
     **kwargs
 ):
+    if attn_kwargs is None:
+        attn_kwargs = {}
     attn_kwargs.update(kwargs)
     # This approach lacks scalability and will be refactored.
     from transformers import LlamaForCausalLM, MistralForCausalLM, Qwen2ForCausalLM, Qwen2Model
@@ -148,16 +150,26 @@ def patch_hf(
     else:
         raise ValueError(f"Only supports llama, mistral and qwen2 models, not {model.__class__.__name__}.")
 
-    hf_rope = model.model.layers[0].self_attn.rotary_emb 
-    if isinstance(hf_rope, Qwen2RotaryEmbedding):
+    first_attn = model.model.layers[0].self_attn
+    hf_rope = getattr(first_attn, "rotary_emb", None)
+    if hf_rope is None:
+        hf_rope = getattr(model.model, "rotary_emb", None)
+
+    if isinstance(hf_rope, Qwen2RotaryEmbedding) and hasattr(hf_rope, "base") and hasattr(hf_rope, "dim"):
         base = hf_rope.base
-        distance_scale = 1.0
+        distance_scale = 1.0 if distance_scale is None else distance_scale
         dim = hf_rope.dim
     else:
-        base = hf_rope.config.rope_theta
+        rope_config = getattr(hf_rope, "config", None)
+        if rope_config is None:
+            rope_config = model.config
+        base = base if base is not None else getattr(rope_config, "rope_theta", 10000)
         distance_scale = distance_scale if distance_scale is not None else 1.0
-        partial_rotary_factor = hf_rope.config.partial_rotary_factor if hasattr(hf_rope.config, "partial_rotary_factor") else 1.0
-        dim = int((hf_rope.config.hidden_size // hf_rope.config.num_attention_heads) * partial_rotary_factor)
+        partial_rotary_factor = getattr(rope_config, "partial_rotary_factor", 1.0)
+        head_dim = getattr(first_attn, "head_dim", None)
+        if head_dim is None:
+            head_dim = rope_config.hidden_size // rope_config.num_attention_heads
+        dim = int(head_dim * partial_rotary_factor)
     rope = RotaryEmbeddingESM(
         dim,
         base,
