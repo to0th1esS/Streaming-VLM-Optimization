@@ -1,5 +1,6 @@
 import torch
 import numpy as np
+import time
 from logzero import logger
 from decord import VideoReader, cpu
 
@@ -7,6 +8,11 @@ from video_qa.base import BaseVQA, work
 
 
 class ReKVStreamVQA(BaseVQA):
+    @staticmethod
+    def _sync_cuda():
+        if torch.cuda.is_available():
+            torch.cuda.synchronize()
+
     def load_video(self, video_path):
         if video_path.endswith('.npy'):  # FPS=1
             video = np.load(video_path)
@@ -34,13 +40,21 @@ class ReKVStreamVQA(BaseVQA):
 
     @torch.inference_mode()
     def analyze_a_video(self, video_sample):
+        video_timer_start = time.perf_counter()
         video_path = video_sample['video_path']
         video_start_idx = video_end_idx = 0
+        load_start = time.perf_counter()
         video = self.load_video(video_path)
+        load_sec = time.perf_counter() - load_start
         video_tensor = torch.from_numpy(video)
 
         self.qa_model.clear_cache()
+        self._sync_cuda()
+        init_start = time.perf_counter()
         self.qa_model.encode_init_prompt()
+        self._sync_cuda()
+        init_prompt_sec = time.perf_counter() - init_start
+        cumulative_encode_video_sec = 0.0
 
         for sample in video_sample['conversations']:
             logger.debug(f'sample: {sample}')
@@ -51,18 +65,42 @@ class ReKVStreamVQA(BaseVQA):
             temporal_windows = temporal_windows.tolist()
 
             # encode video until receiving QA
+            new_frames = 0
+            encode_video_sec = 0.0
             if temporal_windows[-1] > video_end_idx:
+                encode_start_idx = int(video_start_idx)
                 video_end_idx = temporal_windows[-1]
-                self.qa_model.encode_video(video_tensor[int(video_start_idx):int(video_end_idx)])
+                encode_end_idx = int(video_end_idx)
+                new_frames = max(0, encode_end_idx - encode_start_idx)
+                self._sync_cuda()
+                encode_start = time.perf_counter()
+                self.qa_model.encode_video(video_tensor[encode_start_idx:encode_end_idx])
+                self._sync_cuda()
+                encode_video_sec = time.perf_counter() - encode_start
+                cumulative_encode_video_sec += encode_video_sec
                 video_start_idx = video_end_idx
         
             # OpenQA
+            self._sync_cuda()
+            qa_start = time.perf_counter()
             qa_results = self.video_open_qa(question, max_new_tokens=256)
+            self._sync_cuda()
+            qa_sec = time.perf_counter() - qa_start
             self.record[(self.retrieve_size, self.chunk_size)].append({
                 'video_id': video_sample['video_id'],
                 'question': question,
                 'answer': answer,
                 'pred_answer': qa_results['pred_answer'],
+                'sample_fps': self.sample_fps,
+                'loaded_frames': int(len(video)),
+                'new_encoded_frames': int(new_frames),
+                'encoded_until_frame': int(video_end_idx),
+                'load_video_sec': load_sec,
+                'init_prompt_sec': init_prompt_sec,
+                'encode_video_sec': encode_video_sec,
+                'cumulative_encode_video_sec': cumulative_encode_video_sec,
+                'qa_sec': qa_sec,
+                'elapsed_video_sec': time.perf_counter() - video_timer_start,
             })
  
 
