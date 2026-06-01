@@ -3413,3 +3413,106 @@ feature cosine / MSE 只作为诊断项保留。
 3. 在 7B 上补一组更稳定的 repeated run；
 4. 准备 RVS 真实视频小子集；
 5. 把 semantic stream 写入策略与 ReKV cache manager 的实际 block 数、memory 数值关联起来。
+
+## 2026-06-01：Embedding Reuse 后的 QA-first 语义流实验
+
+### 实验目的
+
+这一轮实验不是继续追求 dense ViT feature 的逐帧还原，而是验证一个更贴近流式 VLM 的假设：
+
+```text
+如果当前帧没有带来新的语义事件，就不应该继续消耗完整 ViT 编码、视觉 token 写入和后端 KV cache 空间。
+```
+
+因此本轮指标优先级调整为：
+
+1. QA sanity / answer consistency 不下降；
+2. visual token 写入显著减少；
+3. ViT encode 时间下降；
+4. feature cosine / MSE 仅作为诊断指标，不再作为第一约束。
+
+### 修改内容
+
+上一版 semantic compute gate 的问题是：
+
+```text
+所有帧先经过 vision embedding 得到轻量语义签名；
+被保留帧随后又调用 _get_video_features，从 pixel values 重新计算一次 embedding。
+```
+
+本轮新增 `_get_video_features_from_embeddings`，使 compute gate 的路径变为：
+
+```text
+pixel values
+  -> vision embeddings
+  -> frame-level semantic signature
+  -> keep / skip decision
+  -> kept embeddings directly enter vision encoder
+  -> multimodal projector
+  -> write only kept visual tokens into LLM / ReKV cache
+```
+
+这一步把语义门控统一成一个更干净的论文表述：**anchor-conditioned semantic router before visual encoding and context writing**。它不是额外的工程补丁，而是把“是否值得进入视觉语义流”这个决策前移。
+
+### 实验设置
+
+```text
+dataset: tiny Big Buck Bunny streaming QA sanity set
+sample_fps: 1.0
+frames observed before final QA: 16
+model: LLaVA-OneVision-Qwen2-0.5B / 7B
+semantic_refresh_interval: 8
+semantic_skip_threshold: 0.03
+enable_semantic_compute_gate: true
+enable_vit_layer_sparse: false
+GPU: A100 80GB
+```
+
+### 结果
+
+| model | method | QA | kept frames | token writing reduction | cumulative encode | speedup vs dense | encode reduction |
+| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| 0.5B | Dense | 3/3 | 16/16 | 0.0% | 0.566s | 1.00x | 0.0% |
+| 0.5B | Semantic compute + write gate | 3/3 | 5/16 | 68.8% | 0.492s | 1.15x | 13.1% |
+| 7B | Dense | 3/3 | 16/16 | 0.0% | 0.771s | 1.00x | 0.0% |
+| 7B | Semantic compute + write gate | 3/3 | 5/16 | 68.8% | 0.503s | 1.53x | 34.8% |
+
+对应结果文件：
+
+```text
+results/semantic_stream_sweep/tiny_0p5b_compute_embed_reuse/summary.csv
+results/semantic_stream_sweep/tiny_7b_compute_embed_reuse/summary.csv
+results/tiny_streaming_qa/dense_0p5b_1fps_current/1_0.csv
+results/tiny_streaming_qa/dense_7b_1fps_current/1_0.csv
+```
+
+### 现象分析
+
+1. QA sanity 没有下降。3 个问题都保持语义正确，说明在这个简单流式片段里，跳过 11/16 帧没有破坏回答所需语义。
+2. visual token 写入下降 68.8%。这比单纯 ViT 加速更重要，因为它直接减少后端上下文写入、KV cache 增长和后续检索/注意力压力。
+3. 7B 的收益明显大于 0.5B。0.5B 上只有 1.15x，而 7B 上达到 1.53x，说明语义流稀疏化的价值会随着后端模型、cache 管理和真实流式长度上升而放大。
+4. embedding reuse 解决了上一轮 7B compute gate 变慢的问题。上一轮 7B semantic compute gate 为 1.966s，本轮降到 0.503s，说明之前的负收益主要来自重复 embedding 和调度路径，而不是方法本身不可行。
+5. tiny set 仍然只能作为 sanity evidence，不能作为最终论文主结果。下一步必须进入更长、更真实的 streaming QA 数据，统计 end-to-end latency、token/cache growth 和 QA accuracy。
+
+### 对论文方法的启发
+
+最终方法不应表述成“若干工程 trick 的组合”，而应收敛为一个统一原则：
+
+```text
+Dense visual streams should be converted into sparse semantic streams.
+Only anchor-changing or query-relevant semantic events are encoded, written, and retained.
+```
+
+在这个框架下：
+
+1. compute gate 负责减少进入 ViT encoder 的帧；
+2. write gate 负责减少写入 LLM/ReKV cache 的视觉 token；
+3. anchor refresh 负责控制长期漂移；
+4. 后续的 ReKV / streaming cache 管理可以作为同一个 semantic stream 的后端延伸，而不是独立模块堆叠。
+
+### 下一步实验
+
+1. 增加 repeated run / median / p90，避免单次 GPU warm-up 和调度噪声影响结论。
+2. 增加真实 streaming QA 小子集，优先 RVS-Ego / RVS-Movie；如果视频资产暂时不可用，则先建立公开视频 sanity set。
+3. 记录实际 ReKV cache block 数、写入 token 数和检索耗时，把“语义流稀疏化”从 ViT 侧扩展到后端 cache 侧。
+4. 在更长帧序列上扫描更激进配置，例如 `refresh=16/32`、更高 skip threshold，并用 QA 约束决定可接受边界。

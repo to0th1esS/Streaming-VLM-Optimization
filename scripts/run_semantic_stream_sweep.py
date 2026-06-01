@@ -1,6 +1,7 @@
 import argparse
 import csv
 import json
+import statistics
 import subprocess
 import sys
 from pathlib import Path
@@ -46,6 +47,17 @@ def write_json(path: Path, data):
         json.dump(data, handle, ensure_ascii=False, indent=2)
 
 
+def percentile(values, percent):
+    if not values:
+        return 0.0
+    sorted_values = sorted(values)
+    rank = (len(sorted_values) - 1) * percent
+    lower = int(rank)
+    upper = min(lower + 1, len(sorted_values) - 1)
+    weight = rank - lower
+    return sorted_values[lower] * (1.0 - weight) + sorted_values[upper] * weight
+
+
 def tiny_answer_pass(row):
     question = row["question"].lower()
     pred = row["pred_answer"].lower()
@@ -88,10 +100,54 @@ def summarize_run(rows, config):
     }
 
 
-def run_one(args, output_dir: Path, refresh_interval: int, threshold: float, compute_gate: bool):
+def aggregate_rows(rows):
+    grouped = {}
+    for row in rows:
+        key = (
+            row["model"],
+            row["sample_fps"],
+            row["refresh_interval"],
+            row["skip_threshold"],
+            row["compute_gate"],
+            row["enable_vit_layer_sparse"],
+        )
+        grouped.setdefault(key, []).append(row)
+
+    aggregates = []
+    for key, group in grouped.items():
+        encode_values = [float(row["cumulative_encode_video_sec"]) for row in group]
+        elapsed_values = [float(row["elapsed_video_sec"]) for row in group]
+        qa_values = [int(row["qa_pass"]) for row in group]
+        first = group[0]
+        aggregates.append(
+            {
+                "model": key[0],
+                "sample_fps": key[1],
+                "refresh_interval": key[2],
+                "skip_threshold": key[3],
+                "compute_gate": key[4],
+                "enable_vit_layer_sparse": key[5],
+                "repeats": len(group),
+                "qa_pass_rate": sum(qa_values) / len(qa_values),
+                "qa_pass_count_mean": statistics.mean(int(row["qa_pass_count"]) for row in group),
+                "qa_total": first["qa_total"],
+                "input_frames": first["input_frames"],
+                "kept_frames_mean": statistics.mean(float(row["kept_frames"]) for row in group),
+                "token_reduction_mean": statistics.mean(float(row["token_reduction"]) for row in group),
+                "encode_mean_sec": statistics.mean(encode_values),
+                "encode_median_sec": statistics.median(encode_values),
+                "encode_p90_sec": percentile(encode_values, 0.9),
+                "elapsed_mean_sec": statistics.mean(elapsed_values),
+                "elapsed_median_sec": statistics.median(elapsed_values),
+            }
+        )
+    return aggregates
+
+
+def run_one(args, output_dir: Path, refresh_interval: int, threshold: float, compute_gate: bool, repeat_idx: int):
     tag = (
         f"{args.model}_fps{args.sample_fps:g}_r{refresh_interval}_t{threshold:g}_"
-        f"compute{int(compute_gate)}_layer{int(args.enable_vit_layer_sparse)}"
+        f"compute{int(compute_gate)}_layer{int(args.enable_vit_layer_sparse)}_rep{repeat_idx}"
     ).replace(".", "p")
     save_dir = output_dir / "runs" / tag
     cmd = [
@@ -142,6 +198,7 @@ def run_one(args, output_dir: Path, refresh_interval: int, threshold: float, com
             "skip_threshold": threshold,
             "compute_gate": int(compute_gate),
             "enable_vit_layer_sparse": int(args.enable_vit_layer_sparse),
+            "repeat_idx": repeat_idx,
             "save_dir": str(save_dir),
         },
     )
@@ -162,6 +219,7 @@ def parse_args():
     parser.add_argument("--refresh-intervals", default="2,4,8,16")
     parser.add_argument("--thresholds", default="0.005,0.01,0.03")
     parser.add_argument("--compute-gates", default="true,false")
+    parser.add_argument("--repeats", type=int, default=1)
     parser.add_argument("--debug", type=str2bool, default=True)
     return parser.parse_args()
 
@@ -176,20 +234,29 @@ def main():
     for compute_gate in compute_gates:
         for refresh_interval in refresh_intervals:
             for threshold in thresholds:
-                row = run_one(args, output_dir, refresh_interval, threshold, compute_gate)
-                rows.append(row)
-                write_csv(output_dir / "summary.csv", rows)
-                write_json(output_dir / "summary.json", rows)
-                print(
-                    f"done compute={compute_gate} refresh={refresh_interval} threshold={threshold}: "
-                    f"qa={row['qa_pass_count']}/{row['qa_total']} "
-                    f"tokens=-{row['token_reduction'] * 100:.1f}% "
-                    f"encode={row['cumulative_encode_video_sec']:.3f}s"
-                )
+                for repeat_idx in range(args.repeats):
+                    row = run_one(args, output_dir, refresh_interval, threshold, compute_gate, repeat_idx)
+                    rows.append(row)
+                    aggregates = aggregate_rows(rows)
+                    write_csv(output_dir / "summary.csv", rows)
+                    write_json(output_dir / "summary.json", rows)
+                    write_csv(output_dir / "aggregate_summary.csv", aggregates)
+                    write_json(output_dir / "aggregate_summary.json", aggregates)
+                    print(
+                        f"done compute={compute_gate} refresh={refresh_interval} threshold={threshold} "
+                        f"repeat={repeat_idx}: "
+                        f"qa={row['qa_pass_count']}/{row['qa_total']} "
+                        f"token_reduction={row['token_reduction'] * 100:.1f}% "
+                        f"encode={row['cumulative_encode_video_sec']:.3f}s"
+                    )
 
     write_csv(output_dir / "summary.csv", rows)
     write_json(output_dir / "summary.json", rows)
+    aggregates = aggregate_rows(rows)
+    write_csv(output_dir / "aggregate_summary.csv", aggregates)
+    write_json(output_dir / "aggregate_summary.json", aggregates)
     print(f"summary: {output_dir / 'summary.csv'}")
+    print(f"aggregate summary: {output_dir / 'aggregate_summary.csv'}")
 
 
 if __name__ == "__main__":
