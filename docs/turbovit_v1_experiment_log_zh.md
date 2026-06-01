@@ -3213,3 +3213,203 @@ high-drift: dense refresh
    - QA latency；
    - estimated KV cache reduction；
 3. 然后迁移到 RVS 小子集。
+
+---
+
+## 2026-06-01：QA-first sweep 与大模型 smoke test
+
+### 实验目的
+
+本轮继续贯彻新的核心目标：
+
+```text
+最终目标是高效流式视频 VLM 推理，
+不是单独追求 ViT feature 逐帧还原。
+```
+
+因此这一轮实验重点转为：
+
+1. 用 tiny QA 做第一张 QA-first semantic stream 主表；
+2. 观察不同 refresh interval / drift threshold 下 QA 是否稳定；
+3. 统计 visual token writing reduction，作为 cache/context 压缩的核心指标；
+4. 用更大的 `LLaVA-OneVision-Qwen2-7B` 做 smoke test，确认方法不是只在 0.5B 小模型上可跑；
+5. 为 RVS / VStream 这类真正 streaming benchmark 预留直接入口。
+
+### 新增脚本
+
+```text
+scripts/run_semantic_stream_sweep.py
+```
+
+功能：
+
+1. 自动调用 `video_qa.rekv_stream_vqa`；
+2. 扫 `semantic_refresh_interval` 与 `semantic_skip_threshold`；
+3. 汇总：
+   - QA sanity pass；
+   - kept / skipped frame；
+   - visual token writing reduction；
+   - cumulative video encode；
+   - QA latency；
+   - answers。
+
+输出：
+
+```text
+results/semantic_stream_sweep/.../summary.csv
+results/semantic_stream_sweep/.../summary.json
+```
+
+### 0.5B tiny QA sweep
+
+实验设置：
+
+```text
+model: LLaVA-OneVision-Qwen2-0.5B
+sample_fps: 1.0
+enable_semantic_compute_gate: true
+enable_vit_layer_sparse: false
+refresh_interval: 4 / 8 / 16
+skip_threshold: 0.01 / 0.03
+```
+
+结果：
+
+| refresh | threshold | QA | kept frames | token reduction | encode time |
+| ---: | ---: | ---: | ---: | ---: | ---: |
+| 4 | 0.01 | 3/3 | 7/16 | 56.2% | 0.583s |
+| 4 | 0.03 | 3/3 | 6/16 | 62.5% | 0.528s |
+| 8 | 0.01 | 3/3 | 6/16 | 62.5% | 0.558s |
+| 8 | 0.03 | 3/3 | 5/16 | 68.8% | 0.516s |
+| 16 | 0.01 | 3/3 | 5/16 | 68.8% | 0.570s |
+| 16 | 0.03 | 3/3 | 5/16 | 68.8% | 0.689s |
+
+结论：
+
+1. 六个配置 QA sanity 全部通过；
+2. visual token writing reduction 稳定在 `56%-69%`；
+3. 在这个 tiny clip 上，`refresh=8, threshold=0.03` 是当前较好的点：
+
+```text
+QA: 3/3
+kept frames: 5/16
+token reduction: 68.8%
+encode: 0.516s
+```
+
+4. `refresh=16` 没有继续减少写入，说明在当前 gate 下 drift keep 已经触发，单纯增大 refresh 不一定继续压缩。
+
+### 7B smoke test
+
+远程模型已确认存在：
+
+```text
+model_zoo/llava-onevision-qwen2-7b-ov-hf
+```
+
+实验设置：
+
+```text
+model: LLaVA-OneVision-Qwen2-7B
+refresh_interval: 8
+skip_threshold: 0.03
+enable_semantic_compute_gate: true
+enable_vit_layer_sparse: false
+```
+
+结果：
+
+| model | QA | kept frames | token reduction | answers |
+| --- | ---: | ---: | ---: | --- |
+| 7B semantic stream | 3/3 | 5/16 | 68.8% | rabbit / animated / forest-river-tree |
+
+这说明 semantic stream 的 QA 和 token/cache 稀疏化逻辑可以扩展到更大 OneVision 7B 模型。
+
+需要谨慎解释的是 latency：
+
+```text
+7B semantic stream cumulative encode: 1.966s
+7B dense cumulative encode: 0.737s
+```
+
+这个单点暂时不能作为速度负结论，因为当前 compute gate 还有一个明确工程问题：
+
+```text
+gate 阶段先计算 patch embedding；
+保留帧进入 _get_video_features 时又重新计算 embedding。
+```
+
+也就是说，当前实现已经验证了语义路由与 token/cache 稀疏化，但还没有工程优化到真正复用 gate embedding。下一步应避免重复 embedding，并减少 Python per-frame 调度开销。
+
+### RVS / streaming benchmark 入口
+
+本轮将 semantic stream 参数接入：
+
+```text
+video_qa/run_eval.py
+```
+
+新增可传参数：
+
+```text
+--enable_vit_sparse
+--enable_vit_layer_sparse
+--vit_cache_interval
+--vit_update_token_ratio
+--enable_semantic_stream
+--enable_semantic_compute_gate
+--semantic_refresh_interval
+--semantic_skip_threshold
+```
+
+这样后续 RVS 数据到位后，可以直接跑：
+
+```bash
+python video_qa/run_eval.py \
+  --model llava_ov_7b \
+  --dataset rvs_ego \
+  --sample_fps 1.0 \
+  --retrieve_size 4 \
+  --enable_vit_sparse true \
+  --enable_vit_layer_sparse false \
+  --enable_semantic_stream true \
+  --enable_semantic_compute_gate true \
+  --semantic_refresh_interval 8 \
+  --semantic_skip_threshold 0.03 \
+  --debug true
+```
+
+当前远程服务器尚未发现可直接使用的 RVS/Ego4D/MovieNet 视频目录；已有的是 annotation subset。下一步需要补齐真实 streaming 视频资产，优先：
+
+1. RVS-Ego 小子集；
+2. RVS-Movie 小子集；
+3. 如果官方视频准备耗时，先构造 5-10 个真实公开视频的 streaming QA sanity set。
+
+### 当前方向判断
+
+这轮结果支持一个更本质的论文目标：
+
+```text
+Streaming VLM acceleration should not be framed only as visual encoder acceleration.
+It is a semantic stream sparsification problem:
+only semantic events should consume visual computation and memory.
+```
+
+所以后续主线应同时报告：
+
+1. QA score / answer consistency；
+2. visual token writing reduction；
+3. KV cache growth reduction；
+4. retrieval latency / retrieved blocks；
+5. end-to-end streaming latency；
+6. ViT compute latency。
+
+feature cosine / MSE 只作为诊断项保留。
+
+### 下一步
+
+1. 优化 compute gate，避免 kept frames 重复计算 embedding；
+2. 增加 median / p90 latency 统计，避免单次 warm-up 干扰；
+3. 在 7B 上补一组更稳定的 repeated run；
+4. 准备 RVS 真实视频小子集；
+5. 把 semantic stream 写入策略与 ReKV cache manager 的实际 block 数、memory 数值关联起来。

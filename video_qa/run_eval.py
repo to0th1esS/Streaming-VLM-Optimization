@@ -16,6 +16,20 @@ def exec(cmd, sub=False, device=None):
         subprocess.run(cmd, env=my_env)
 
 
+def append_semantic_stream_args(cmd, args):
+    cmd.extend([
+        "--enable_vit_sparse", str(args.enable_vit_sparse),
+        "--enable_vit_layer_sparse", str(args.enable_vit_layer_sparse),
+        "--vit_cache_interval", str(args.vit_cache_interval),
+        "--vit_update_token_ratio", str(args.vit_update_token_ratio),
+        "--enable_semantic_stream", str(args.enable_semantic_stream),
+        "--enable_semantic_compute_gate", str(args.enable_semantic_compute_gate),
+        "--semantic_refresh_interval", str(args.semantic_refresh_interval),
+        "--semantic_skip_threshold", str(args.semantic_skip_threshold),
+    ])
+    return cmd
+
+
 def eval_mlvu(args):
     num_chunks = args.num_chunks
     save_dir = f"results/{args.model}/mlvu/{args.retrieve_size}-{args.sample_fps}"
@@ -34,6 +48,7 @@ def eval_mlvu(args):
                     "--debug", args.debug,
                     "--num_chunks", str(num_chunks),
                     "--chunk_idx", str(idx)]
+            cmd = append_semantic_stream_args(cmd, args)
             p = multiprocessing.Process(target=exec, args=(cmd, True, f'{4*idx},{4*idx+1},{4*idx+2},,{4*idx+3}' if args.model=='llava_ov_72b' else str(idx)))  # llava_ov_72b needs 4x 80GB GPUs
             processes.append(p)
             p.start()
@@ -67,6 +82,7 @@ def eval_qaego4d(args):
                     "--debug", args.debug,
                     "--num_chunks", str(num_chunks),
                     "--chunk_idx", str(idx)]
+            cmd = append_semantic_stream_args(cmd, args)
             p = multiprocessing.Process(target=exec, args=(cmd, True, f'{4*idx},{4*idx+1},{4*idx+2},,{4*idx+3}' if args.model=='llava_ov_72b' else str(idx)))  # llava_ov_72b needs 4x 80GB GPUs
             processes.append(p)
             p.start()
@@ -167,6 +183,7 @@ def eval_rvs_ego(args):
                     "--debug", args.debug,
                     "--num_chunks", str(num_chunks),
                     "--chunk_idx", str(idx)]
+            cmd = append_semantic_stream_args(cmd, args)
             p = multiprocessing.Process(target=exec, args=(cmd, True, f'{4*idx},{4*idx+1},{4*idx+2},,{4*idx+3}' if args.model=='llava_ov_72b' else str(idx)))  # llava_ov_72b needs 4x 80GB GPUs
             processes.append(p)
             p.start()
@@ -201,6 +218,7 @@ def eval_rvs_movie(args):
                     "--debug", args.debug,
                     "--num_chunks", str(num_chunks),
                     "--chunk_idx", str(idx)]
+            cmd = append_semantic_stream_args(cmd, args)
             p = multiprocessing.Process(target=exec, args=(cmd, True, f'{4*idx},{4*idx+1},{4*idx+2},,{4*idx+3}' if args.model=='llava_ov_72b' else str(idx)))  # llava_ov_72b needs 4x 80GB GPUs
             processes.append(p)
             p.start()
@@ -260,6 +278,14 @@ if __name__ == "__main__":
     parser.add_argument("--sample_fps", type=float, default=1)
     parser.add_argument("--n_local", type=int, default=15000)
     parser.add_argument("--retrieve_size", type=int, default=64)
+    parser.add_argument("--enable_vit_sparse", type=str, default='true')
+    parser.add_argument("--enable_vit_layer_sparse", type=str, default='true')
+    parser.add_argument("--vit_cache_interval", type=int, default=2)
+    parser.add_argument("--vit_update_token_ratio", type=float, default=0.25)
+    parser.add_argument("--enable_semantic_stream", type=str, default='false')
+    parser.add_argument("--enable_semantic_compute_gate", type=str, default='false')
+    parser.add_argument("--semantic_refresh_interval", type=int, default=4)
+    parser.add_argument("--semantic_skip_threshold", type=float, default=0.01)
     parser.add_argument("--debug", type=str, default='false')
     args = parser.parse_args()
     func_dic = {
