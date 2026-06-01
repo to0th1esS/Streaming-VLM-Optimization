@@ -111,7 +111,7 @@ def load_model(model_path='model_zoo/LLaVA/llava-onevision-qwen2-7b-ov-hf',
                n_init=None, n_local=None, topk=64, chunk_size=1,
                enable_vit_sparse=True, vit_sparse_config=None):
     device = 'cuda'
-    n_frame_tokens = 60 ### 196 after compress  
+    n_frame_tokens = 196
     processor = LlavaOnevisionProcessor.from_pretrained(model_path)
     
     init_prompt = '<|im_start|>system \nYou are a helpful assistant.<|im_end|><|im_start|>user '
