@@ -2810,3 +2810,243 @@ when to reuse, when to refresh, and when to correct visual memory.
    - QA answer consistency；
    - visual token writing reduction；
    - ReKV cache memory / retrieval latency。
+
+---
+
+## 2026-06-01：目标修正为 QA-first Sparse Semantic Stream
+
+### 修正背景
+
+前面大量实验把逐帧视觉特征的 cosine / MSE 放在了过高的位置。这有一个问题：
+
+```text
+很多速度优先方案虽然不能逐帧还原 dense ViT feature，
+但可能在 QA 任务上完全可接受，
+并且能显著减少视觉 token 写入和 ReKV/LLM cache 压力。
+```
+
+因此，从这一轮开始，实验目标正式修正为：
+
+```text
+不再以逐帧视觉特征完全还原 dense ViT 为目标；
+而是以 QA 性能基本不下降为约束，
+最大化流式视觉处理与上下文写入效率。
+```
+
+更贴近最初研究动机的表述是：
+
+```text
+将密集视觉流转化为稀疏语义流。
+```
+
+这里的“稀疏”不只包括 ViT 计算稀疏，也包括：
+
+1. 视觉 token 写入稀疏；
+2. ReKV / LLM cache 存储稀疏；
+3. 后续 retrieval 搜索空间稀疏；
+4. QA 前上下文构造稀疏。
+
+### 如何重新看待之前实验
+
+之前实验不能被否定，而应重新分层解释：
+
+| 之前指标 | 新定位 |
+| --- | --- |
+| feature cosine / MSE | 诊断视觉漂移，不作为主否决指标 |
+| v5/v7/v8 sparse path speed | 证明非融合 token sparse recomputation 的工程瓶颈 |
+| v9 AnchorGate | 证明低成本语义路由能释放速度空间 |
+| skip-only 漂移曲线 | 说明长期复用需要 correction 或任务级约束 |
+| cache policy simulation | 说明视觉 token 写入减少能直接服务后端 ReKV |
+
+因此，之前结论应从：
+
+```text
+某方案 feature cosine 不够，所以不可用。
+```
+
+修正为：
+
+```text
+某方案造成了可观视觉漂移；
+下一步需要检查这种漂移是否真的影响 QA。
+如果 QA 稳定，则该方案仍可能是高价值速度优先方案。
+```
+
+### 新的论文目标
+
+更适合 AAAI / 顶会口味的方法主线应是：
+
+```text
+Anchor-conditioned Semantic Stream
+
+Dense visual stream
+  -> semantic stability estimation
+  -> sparse semantic event stream
+  -> selective visual recomputation
+  -> selective context/cache writing
+  -> task-level QA preservation
+```
+
+这比“只加速 ViT”更有研究价值，因为它把视觉编码、上下文写入和缓存管理统一到同一个语义稳定性信号下。
+
+### 新增实现：semantic stream writing gate
+
+本轮新增一个真实 VLM 入口：
+
+```text
+model/vision_accelerator/semantic_stream.py
+```
+
+核心逻辑：
+
+```text
+For each frame:
+  1. compute semantic signature from selected vision features
+  2. compare to rolling anchor
+  3. keep frame if:
+       - first/reference frame
+       - periodic refresh
+       - drift exceeds threshold
+  4. skip frame otherwise
+  5. only kept frames are written into LLM/ReKV context
+```
+
+这个版本暂时不是为了减少 ViT 计算，因为它在 `_get_video_features` 后做 postprocess；它的第一目标是验证：
+
+```text
+QA 能否容忍视觉上下文写入稀疏化。
+```
+
+### 真实 tiny QA 验证
+
+实验设置：
+
+```text
+model: LLaVA-OneVision-Qwen2-0.5B
+backend: ReKV streaming QA
+video: Big Buck Bunny
+sample_fps: 1.0
+QA: 3 个 sanity 问题
+semantic stream: enabled
+vit sparse patch: enabled
+```
+
+#### Dense 参考
+
+之前 dense 1fps tiny QA：
+
+```text
+encoded frames until last QA: 16
+visual tokens written: 3136
+answers: 3/3 语义正确
+```
+
+#### Semantic stream，N=4，threshold=0.01
+
+结果：
+
+| metric | value |
+| --- | ---: |
+| input frames | 16 |
+| kept frames | 7 |
+| skipped frames | 9 |
+| input visual tokens | 3136 |
+| written visual tokens | 1372 |
+| token writing reduction | 56.25% |
+| QA sanity | 3/3 语义正确 |
+
+答案：
+
+| question | semantic stream answer |
+| --- | --- |
+| character | small, cute, friendly bunny |
+| animated or real | Animated |
+| setting | lush green forest / tree stump / stream |
+
+#### Semantic stream，N=8，threshold=0.03
+
+结果：
+
+| metric | value |
+| --- | ---: |
+| input frames | 16 |
+| kept frames | 6 |
+| skipped frames | 10 |
+| input visual tokens | 3136 |
+| written visual tokens | 1176 |
+| token writing reduction | 62.5% |
+| QA sanity | 3/3 语义正确 |
+
+答案：
+
+| question | semantic stream answer |
+| --- | --- |
+| character | small, cute, friendly bunny |
+| animated or real | Animated |
+| setting | lush green forest / treehouse / stream / meadow |
+
+### 当前解释
+
+这组结果很重要，因为它说明：
+
+1. 即使视觉特征没有逐帧还原 dense，QA 仍可能稳定；
+2. 视觉上下文写入可以先获得 `56%-62%` 的 token reduction；
+3. 这部分收益会直接转化为更小的 ReKV/LLM cache、较少的后续 retrieval 搜索空间、较低的 prefill/cache 更新压力；
+4. 这比单纯讨论 ViT latency 更符合“流式视频推理系统”的研究目标。
+
+需要注意：
+
+```text
+当前 semantic stream gate 仍然先编码视觉帧，再决定是否写入。
+所以这一轮主要验证 cache/context 稀疏化，而不是 ViT compute 稀疏化。
+```
+
+这不是缺陷，而是有意拆分变量：
+
+1. 先证明 QA 允许稀疏语义写入；
+2. 再把同一 gate 前移，用于跳过或校正 ViT 计算；
+3. 最后把 semantic stream 与 ReKV cache 写入 / retrieval 统一起来。
+
+### 修正后的评价指标
+
+后续主指标改为：
+
+| 层级 | 主指标 |
+| --- | --- |
+| QA 任务 | answer consistency / benchmark score |
+| 视觉流 | kept frame ratio / skipped frame ratio |
+| context 写入 | visual token writing reduction |
+| cache | KV cache size / retrieved block count / retrieval latency |
+| 速度 | end-to-end latency / ViT latency / prefill latency |
+| 诊断 | feature cosine / MSE / drift curve |
+
+也就是说，feature cosine 仍然记录，但只用于解释：
+
+```text
+为什么某个 QA case 失败；
+或为什么某段视频需要更频繁 refresh/correction。
+```
+
+### 下一步实验
+
+下一步应直接做 QA-first ablation：
+
+1. 在 tiny QA 上扫：
+   - `semantic_refresh_interval = 2, 4, 8, 16`
+   - `semantic_skip_threshold = 0.005, 0.01, 0.03`
+2. 记录：
+   - QA answer 是否一致；
+   - written visual tokens；
+   - ReKV cache memory；
+   - encode / QA latency；
+3. 再接 RVS 小子集真实视频；
+4. 如果 QA 稳定，再将 semantic gate 前移，减少 ViT 计算；
+5. 同时设计 v10 cheap correction，只对 QA 风险较高的 mid-drift frame 写入少量 correction tokens。
+
+这条路线更符合最终论文叙事：
+
+```text
+Dense frames are not all semantic events.
+We convert streaming video into sparse semantic events,
+and only semantic events deserve computation and memory.
+```
