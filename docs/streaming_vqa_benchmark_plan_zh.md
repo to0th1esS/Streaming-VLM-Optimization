@@ -89,6 +89,18 @@ RVS-Movie: 8 videos, 24 questions
 
 视频文件当前缺失，这是正常状态。
 
+远程服务器状态：
+
+```text
+远程直接访问 HuggingFace 失败：
+  urllib.error.URLError: [Errno 99] Cannot assign requested address
+
+已采用 fallback：
+  本地下载标注 -> scp 到远程仓库 data/ 目录
+```
+
+因此后续远程数据准备不应假设 HuggingFace 可直接访问。小标注可以从本地同步；大视频数据建议通过服务器可用的数据源、已有数据盘或手动上传/挂载。
+
 ## 为什么不直接下载完整 benchmark
 
 不建议现在直接全量下载，原因：
