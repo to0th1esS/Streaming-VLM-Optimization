@@ -3050,3 +3050,166 @@ Dense frames are not all semantic events.
 We convert streaming video into sparse semantic events,
 and only semantic events deserve computation and memory.
 ```
+
+---
+
+## 2026-06-01：Semantic Stream 的 compute gate 与 writing gate 融合
+
+### 实验目的
+
+上一轮 semantic stream 只在 ViT 输出后做视觉 token 写入过滤，因此主要证明：
+
+```text
+QA 可以容忍上下文/cache 写入稀疏化。
+```
+
+但它还没有充分验证：
+
+```text
+同一个语义稳定性信号能否同时减少 ViT 计算和视觉 token 写入。
+```
+
+本轮目标就是把两者融合成最小闭环：
+
+1. 在完整 ViT 之前先做低成本 semantic gate；
+2. 稳定帧直接跳过完整 vision tower；
+3. 被跳过的帧也不写入 ReKV/LLM context；
+4. 只有 refresh / drift frame 才完整编码并写入视觉 token；
+5. 仍然用 QA answer consistency 作为主约束。
+
+### 新增实现
+
+新增开关：
+
+```text
+--enable_semantic_compute_gate true
+--enable_vit_layer_sparse false
+```
+
+关键区别：
+
+| mode | ViT compute | token writing |
+| --- | --- | --- |
+| postprocess writing gate | 所有帧仍完整 ViT 编码 | 只写入 keep frames |
+| pre-ViT compute gate | 只有 keep frames 完整 ViT 编码 | 只写入 keep frames |
+
+同时将旧的逐层 sparse patch 与 semantic gate 解耦：
+
+```text
+--enable_vit_layer_sparse false
+```
+
+原因是旧 layer sparse path 在真实 OneVision 上已经证明不够 GPU 友好，会干扰我们验证 semantic stream 的真实收益。
+
+### 实验设置
+
+```text
+model: LLaVA-OneVision-Qwen2-0.5B
+backend: ReKV streaming QA
+video: Big Buck Bunny
+sample_fps: 1.0
+QA: 3 个 sanity 问题
+semantic_refresh_interval: 8
+semantic_skip_threshold: 0.03
+enable_semantic_compute_gate: true
+enable_vit_layer_sparse: false
+```
+
+### 结果
+
+| mode | input frames | kept frames | written tokens | token reduction | cumulative video encode | QA sanity |
+| --- | ---: | ---: | ---: | ---: | ---: | --- |
+| dense baseline | 16 | 16 | 3136 | 0% | 0.572s | 3/3 |
+| writing gate only, N=8 | 16 | 6 | 1176 | 62.5% | 0.728s | 3/3 |
+| compute + writing gate, N=8 | 16 | 5 | 980 | 68.75% | 0.467s | 3/3 |
+
+逐问题结果：
+
+| question | answer |
+| --- | --- |
+| character | small, cute bunny character |
+| animated or real | Animated |
+| setting | lush green forest / moss-covered tree / stream |
+
+### 解释
+
+这轮验证了“加速计算”和“选择性 token 保留”的协同关系：
+
+```text
+同一个 semantic gate 先判断当前帧是否是新的语义事件。
+
+如果不是：
+  - 不完整跑 ViT；
+  - 不写入 visual tokens；
+  - 不增加 ReKV/LLM cache；
+  - 不扩大后续 retrieval 搜索空间。
+
+如果是：
+  - 完整编码；
+  - 写入 visual tokens；
+  - 更新 rolling semantic anchor；
+  - 作为后续帧的语义参考。
+```
+
+因此，semantic stream 的收益不是单点收益，而是级联收益：
+
+1. **计算侧**：跳过稳定帧的完整 vision tower；
+2. **上下文侧**：减少进入 LLM 的 visual tokens；
+3. **cache 侧**：减少 ReKV KV cache 写入；
+4. **retrieval 侧**：减少后续需要检索的视觉 block；
+5. **任务侧**：只要 QA answer 不下降，就不要求逐帧 feature 还原。
+
+### 当前限制
+
+1. tiny QA 只有 3 个问题，只能作为 sanity，不是论文主结果；
+2. 当前 gate signature 来自 patch embedding，仍需验证在更多视频和问题上的鲁棒性；
+3. cumulative video encode 下降幅度还不大，原因包括：
+   - tiny 样本太短；
+   - 每帧仍需要 video processor 和 embedding gate；
+   - Python per-frame 调度开销明显；
+4. 但 token writing reduction 已经非常明显，说明 cache/context 侧收益已经成立。
+
+### 修正后的方法雏形
+
+现在的方法雏形可以写成：
+
+```text
+Anchor-conditioned Semantic Stream:
+
+For each incoming frame:
+  1. estimate semantic drift using a cheap anchor-conditioned signature
+  2. if stable:
+       skip visual recomputation
+       skip visual token writing
+  3. if unstable or periodic refresh:
+       perform full visual encoding
+       write visual tokens into streaming memory
+       update semantic anchor
+```
+
+后续 v10 要补的是：
+
+```text
+stable: skip
+mid-drift: cheap correction / small semantic token write
+high-drift: dense refresh
+```
+
+这能避免纯 skip 的语义漂移，同时避免回到昂贵的 token-level sparse scatter。
+
+### 下一步
+
+下一步实验应从单点验证转为 QA-first sweep：
+
+1. 自动扫：
+   - refresh interval: 2 / 4 / 8 / 16
+   - skip threshold: 0.005 / 0.01 / 0.03
+   - compute gate on/off
+2. 输出主表：
+   - QA answer consistency；
+   - kept frame ratio；
+   - visual token writing reduction；
+   - cumulative video encode；
+   - QA latency；
+   - estimated KV cache reduction；
+3. 然后迁移到 RVS 小子集。
