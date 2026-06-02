@@ -22,7 +22,7 @@ class ReKVStreamVQA(BaseVQA):
             frame_paths = sorted(
                 [
                     path
-                    for path in video_path_obj.iterdir()
+                    for path in video_path_obj.rglob("*")
                     if path.suffix.lower() in {".jpg", ".jpeg", ".png", ".webp"}
                 ]
             )
