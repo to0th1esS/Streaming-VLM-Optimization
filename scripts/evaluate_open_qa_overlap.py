@@ -88,18 +88,35 @@ def main():
         evaluated.append({**row, "token_f1": score})
 
     scores = [float(row["token_f1"]) for row in evaluated]
-    final = rows[-1] if rows else {}
-    semantic_input_tokens = float(final.get("semantic_input_tokens", 0) or 0)
-    semantic_written_tokens = float(final.get("semantic_written_tokens", 0) or 0)
+    final_by_video = {}
+    for row in rows:
+        final_by_video[row.get("video_id", "")] = row
+
+    total_encode_sec = sum(
+        float(row.get("cumulative_encode_video_sec", 0) or 0) for row in final_by_video.values()
+    )
+    semantic_input_frames = sum(
+        int(float(row.get("semantic_input_frames", 0) or 0)) for row in final_by_video.values()
+    )
+    semantic_kept_frames = sum(
+        int(float(row.get("semantic_kept_frames", 0) or 0)) for row in final_by_video.values()
+    )
+    semantic_input_tokens = sum(
+        float(row.get("semantic_input_tokens", 0) or 0) for row in final_by_video.values()
+    )
+    semantic_written_tokens = sum(
+        float(row.get("semantic_written_tokens", 0) or 0) for row in final_by_video.values()
+    )
     summary = {
         "pred_path": args.pred_path,
         "samples": len(evaluated),
+        "videos": len(final_by_video),
         "mean_token_f1": sum(scores) / len(scores) if scores else 0.0,
         "min_token_f1": min(scores) if scores else 0.0,
         "max_token_f1": max(scores) if scores else 0.0,
-        "cumulative_encode_video_sec": float(final.get("cumulative_encode_video_sec", 0) or 0),
-        "semantic_input_frames": int(float(final.get("semantic_input_frames", 0) or 0)),
-        "semantic_kept_frames": int(float(final.get("semantic_kept_frames", 0) or 0)),
+        "total_encode_video_sec": total_encode_sec,
+        "semantic_input_frames": semantic_input_frames,
+        "semantic_kept_frames": semantic_kept_frames,
         "semantic_token_reduction": (
             1.0 - semantic_written_tokens / semantic_input_tokens if semantic_input_tokens else 0.0
         ),
