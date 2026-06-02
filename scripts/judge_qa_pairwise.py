@@ -197,6 +197,16 @@ def parse_judgment(text):
     }
 
 
+def normalize_relative(dense_correct, sparse_correct, relative):
+    if dense_correct is True and sparse_correct is False:
+        return "worse"
+    if dense_correct is False and sparse_correct is True:
+        return "better"
+    if dense_correct is True and sparse_correct is True and relative not in {"better", "same", "worse"}:
+        return "same"
+    return relative if relative in {"better", "same", "worse"} else "same"
+
+
 def summarize(rows):
     judged = [row for row in rows if row["parse_ok"] == "1"]
     total = len(rows)
@@ -241,13 +251,16 @@ def judge_file(args):
     for idx, row in enumerate(rows):
         raw = generate_judgment(runtime, row, args.max_new_tokens)
         parsed = parse_judgment(raw)
+        relative_raw = parsed["relative"]
+        relative = normalize_relative(parsed["dense_correct"], parsed["sparse_correct"], relative_raw)
         judged = {
             **row,
             "judge_raw": raw,
             "judge_reason": parsed["reason"],
             "dense_correct": "1" if parsed["dense_correct"] else "0" if parsed["dense_correct"] is False else "",
             "sparse_correct": "1" if parsed["sparse_correct"] else "0" if parsed["sparse_correct"] is False else "",
-            "relative": parsed["relative"],
+            "relative_raw": relative_raw,
+            "relative": relative,
             "parse_ok": "1" if parsed["parse_ok"] else "0",
         }
         judged_rows.append(judged)
