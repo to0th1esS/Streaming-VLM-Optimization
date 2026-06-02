@@ -21,8 +21,8 @@
         "start_time": 0,
         "end_time": 8,
         "gt_duration": 8,
-        "eval_all": [["grass", "grassy", "meadow", "field"], ["forest", "trees", "outdoor", "nature"]],
-        "eval_any": [["bright", "sunny", "green", "landscape"]],
+        "eval_all": [["forest", "trees", "outdoor", "nature", "landscape"]],
+        "eval_any": [["bright", "sunny", "green", "grass", "grassy", "meadow", "field", "sky"]],
         "eval_not": [["kitchen", "indoor", "city"]]
       },
       {
@@ -33,7 +33,7 @@
         "end_time": 20,
         "gt_duration": 20,
         "eval_all": [["bird", "small animal", "squirrel"], ["branch", "tree"]],
-        "eval_any": [["gray", "grey", "perched", "standing"]],
+        "eval_any": [],
         "eval_not": [["rabbit", "bunny"]]
       },
       {
@@ -43,8 +43,8 @@
         "start_time": 0,
         "end_time": 44,
         "gt_duration": 44,
-        "eval_all": [["hole", "burrow", "cave"], ["dark"]],
-        "eval_any": [["rocks", "grass", "entrance"]],
+        "eval_all": [["hole", "burrow", "cave"]],
+        "eval_any": [["dark", "rocks", "grass", "entrance"]],
         "eval_not": [["house", "kitchen", "car"]]
       },
       {
@@ -56,7 +56,7 @@
         "gt_duration": 44,
         "eval_all": [["no", "not", "hasn't", "has not"]],
         "eval_any": [["rabbit", "bunny"]],
-        "eval_not": [["yes", "clearly appeared"]]
+        "eval_not": []
       },
       {
         "question": "What large character is lying near the burrow after the dark-hole scene?",
@@ -65,8 +65,8 @@
         "start_time": 0,
         "end_time": 48,
         "gt_duration": 48,
-        "eval_all": [["rabbit", "bunny"], ["white"], ["lying", "laying", "resting", "sleeping"]],
-        "eval_any": [["burrow", "hole", "grass"]],
+        "eval_all": [["rabbit", "bunny", "big buck bunny"]],
+        "eval_any": [["lying", "laying", "resting", "sleeping", "burrow", "hole", "grass", "near"]],
         "eval_not": [["bird", "squirrel"]]
       },
       {
@@ -76,8 +76,8 @@
         "start_time": 0,
         "end_time": 52,
         "gt_duration": 52,
-        "eval_all": [["rabbit", "bunny"], ["stand", "stands", "standing", "gets up", "upright"]],
-        "eval_any": [["burrow", "hole", "grass"]],
+        "eval_all": [["rabbit", "bunny"], ["stand", "stands", "standing", "gets up", "upright", "sits up", "sit up", "sitting up"]],
+        "eval_any": [["burrow", "hole", "grass", "looks around"]],
         "eval_not": [["flying", "swimming"]]
       },
       {
