@@ -5,9 +5,6 @@ import shutil
 import subprocess
 from pathlib import Path
 
-from huggingface_hub import hf_hub_download
-
-
 REPO_ID = "IVGSZ/VStream-QA"
 REPO_TYPE = "dataset"
 REALTIME_FILES = {
@@ -35,6 +32,8 @@ def run(cmd, cwd=None):
 
 def download_file(filename, target_root, endpoint):
     os.environ.setdefault("HF_ENDPOINT", endpoint)
+    from huggingface_hub import hf_hub_download
+
     local_path = hf_hub_download(
         repo_id=REPO_ID,
         repo_type=REPO_TYPE,
