@@ -3550,3 +3550,182 @@ results/semantic_stream_sweep/tiny_7b_compute_embed_reuse_repeats3/aggregate_sum
 ```
 
 这说明 embedding reuse 后的 7B semantic stream 代表点是稳定的，不是单次偶然低延迟。相对当前 dense 7B 的 0.771s，median encode speedup 约为 `1.53x`，encode 时间下降约 `34.8%`。
+
+## 2026-06-02：加强 QA 约束与速度上界探索
+
+### 实验目的
+
+上一轮 tiny QA 只有 3 个简单问题，主要用于 smoke test，无法触摸语义流压缩的质量上界。本轮目标是把验证从“简单 sanity”推进到“更难的流式语义事件 QA”：
+
+1. 增加 60 秒真实视频上的多时间点问题；
+2. 覆盖标题、场景、对象、洞口、否定时序、角色出现、动作变化、末尾运动；
+3. 用 dense 7B 作为当前模型上限，再比较 semantic stream 是否引入额外质量损失；
+4. 在 QA 不低于 dense 的前提下继续提高 skip 强度，寻找速度优先边界。
+
+### 代码与数据修改
+
+新增 hard streaming QA 标注：
+
+```text
+data/streaming_qa_hard/bbb_semantic_events_qa.json
+```
+
+新增每条样本级规则字段：
+
+```text
+eval_all / eval_any / eval_not
+```
+
+并在 `video_qa/rekv_stream_vqa.py` 中写入结果 CSV。`scripts/run_semantic_stream_sweep.py` 现在会优先使用这些规则计算 QA pass，不再只依赖 tiny 三问的手写判断。
+
+新增独立规则评估脚本：
+
+```text
+scripts/evaluate_streaming_qa_rules.py
+```
+
+新增 streaming 资产检查脚本：
+
+```text
+scripts/check_streaming_video_assets.py
+```
+
+### Hard QA 数据集设置
+
+```text
+video: data/turbovit_v1/big_buck_bunny.mp4
+duration: 60.1s
+resolution: 640x360
+sample_fps: 1.0
+questions: 8
+model: LLaVA-OneVision-Qwen2-7B
+```
+
+问题时间点：
+
+```text
+4s / 8s / 20s / 44s / 44s / 48s / 52s / 56s
+```
+
+### Dense 7B 上限
+
+```text
+result: results/streaming_qa_hard/bbb_events_dense_7b_v2/1_0.csv
+rule eval: results/streaming_qa_hard/bbb_events_dense_7b_v2/rule_eval.json
+```
+
+结果：
+
+| method | QA | cumulative encode |
+| --- | ---: | ---: |
+| Dense 7B | 7/8 | 2.832s |
+
+唯一失败是末尾运动问题，dense 模型本身没有明确识别 rabbit walking away。因此在当前 hard set 中，`7/8` 是合理 dense 上限。
+
+### 当前代表配置
+
+```text
+semantic_refresh_interval: 8
+semantic_skip_threshold: 0.03
+enable_semantic_compute_gate: true
+enable_vit_layer_sparse: false
+```
+
+结果：
+
+| method | QA | kept frames | token reduction | cumulative encode | speedup vs dense |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| Dense 7B | 7/8 | 56/56 | 0.0% | 2.832s | 1.00x |
+| Semantic stream | 7/8 | 12/56 | 78.6% | 1.296s | 2.19x |
+
+这一点说明：在更难 QA 下，semantic stream 没有引入额外质量损失，同时比 tiny QA 更明显地体现出长流式场景下的收益。
+
+### 激进网格搜索
+
+扫描：
+
+```text
+refresh_interval: 8 / 16 / 32
+skip_threshold: 0.03 / 0.06 / 0.1
+```
+
+结果摘要：
+
+| refresh | threshold | QA | kept frames | token reduction | encode | speedup |
+| ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| 8 | 0.03 | 7/8 | 12/56 | 78.6% | 1.074s | 2.64x |
+| 8 | 0.10 | 7/8 | 10/56 | 82.1% | 1.080s | 2.62x |
+| 16 | 0.06 | 7/8 | 10/56 | 82.1% | 1.022s | 2.77x |
+| 16 | 0.10 | 7/8 | 8/56 | 85.7% | 0.943s | 3.00x |
+| 32 | 0.06 | 7/8 | 10/56 | 82.1% | 0.994s | 2.85x |
+
+当前速度优先但仍稳的候选点：
+
+```text
+refresh=16, threshold=0.1
+QA: 7/8, matching dense
+kept frames: 8/56
+token reduction: 85.7%
+encode: 0.943s
+speedup: 3.00x
+```
+
+### 上界网格搜索
+
+继续扫描：
+
+```text
+refresh_interval: 16 / 32 / 64
+skip_threshold: 0.1 / 0.2 / 0.3
+```
+
+最佳单点：
+
+| refresh | threshold | QA | kept frames | token reduction | encode | speedup |
+| ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| 64 | 0.3 | 8/8 | 6/56 | 89.3% | 0.822s | 3.45x |
+
+这个点非常有启发性：更激进的稀疏语义流甚至回答出了 dense 没有通过的末尾运动问题。但这不能被过度解读成“稀疏一定提升质量”，更合理的解释是：压缩后的上下文减少了冗余视觉 token，对后端检索/回答有时反而更集中。这个现象值得后续在真实 benchmark 上系统验证。
+
+### 当前方向性结论
+
+本轮支持一个更强的研究判断：
+
+```text
+The upper bound is not feature reconstruction.
+The useful objective is semantic event preservation under streaming QA constraints.
+```
+
+换句话说，我们不应把所有视觉帧都当成需要近似恢复的连续信号，而应把它们看成候选语义事件。只有改变语义状态、影响未来问题回答、或者需要写入长期 cache 的帧，才应该进入稀疏语义流。
+
+### 真实 Benchmark 资产检查
+
+运行：
+
+```text
+python scripts/check_streaming_video_assets.py
+```
+
+本地检查结果：
+
+| dataset | videos | questions | available videos |
+| --- | ---: | ---: | ---: |
+| RVS-Ego subset | 8 | 24 | 0/8 |
+| RVS-Movie subset | 8 | 24 | 0/8 |
+| BBB hard QA | 1 | 8 | 1/1 |
+
+因此，下一步扩大 QA 精度验证的主要阻塞是视频资产，而不是评测代码。需要把 RVS/Ego4D/MovieNet 视频放到：
+
+```text
+data/rvs/ego/videos/
+data/rvs/movie/videos/
+```
+
+远程大规模实验时建议对应放到服务器数据目录，再用 annotation 中的 `video_path` 或软链接对齐。
+
+### 下一步
+
+1. 对 `refresh=64, threshold=0.3` 做 repeated run，确认 8/8 和 0.822s 是否稳定。
+2. 准备 RVS-Ego / RVS-Movie 视频资产，至少先补齐当前 16 个小子集视频。
+3. 在 RVS 上报告 dense vs semantic 的 QA accuracy、token reduction、encode speedup 和 end-to-end latency。
+4. 增加真实 ReKV cache block 数和检索耗时统计，把 compute/write sparsification 与后端 cache efficiency 关联起来。
