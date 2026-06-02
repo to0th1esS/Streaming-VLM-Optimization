@@ -183,3 +183,53 @@ scale: 644 videos / 3100 queries
 2. 接入 RVS dense vs semantic 主表；
 3. 再下载 StreamingBench；
 4. 最后下载 OVO-Bench 做 STC 相关对比。
+
+## 2026-06-02 状态更新
+
+### 下载进度
+
+后台下载进程仍在运行：
+
+```text
+PID: 13450
+target: /home/mllm/datasets/vstream_qa
+current size: about 14GB
+```
+
+已完成：
+
+```text
+movienet_frames_online.zip: 2.36GB
+metadata files: done
+```
+
+仍在下载：
+
+```text
+ego4d_frames_online.partaa
+ego4d_frames_online.partab
+ego4d_frames_online.partac
+```
+
+### RVS-Movie 解包与链接
+
+MovieNet frame archive 已解包到：
+
+```text
+/home/mllm/datasets/vstream_qa/frames/rvs_movie
+```
+
+并通过软链接接入仓库：
+
+```text
+data/rvs/movie/videos/*.mp4
+```
+
+资产检查结果：
+
+| dataset | videos | questions | available videos |
+| --- | ---: | ---: | ---: |
+| RVS-Movie subset | 8 | 24 | 8/8 |
+| RVS-Ego subset | 8 | 24 | 0/8 |
+
+因此当前已经可以跑 RVS-Movie 小子集；RVS-Ego 等 Ego4D 分片下载和解包完成后再接入。

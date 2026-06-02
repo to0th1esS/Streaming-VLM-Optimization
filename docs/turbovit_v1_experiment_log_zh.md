@@ -3729,3 +3729,92 @@ data/rvs/movie/videos/
 2. 准备 RVS-Ego / RVS-Movie 视频资产，至少先补齐当前 16 个小子集视频。
 3. 在 RVS 上报告 dense vs semantic 的 QA accuracy、token reduction、encode speedup 和 end-to-end latency。
 4. 增加真实 ReKV cache block 数和检索耗时统计，把 compute/write sparsification 与后端 cache efficiency 关联起来。
+
+## 2026-06-02：RVS-Movie 真实小子集实验
+
+### 实验目的
+
+前面的 Big Buck Bunny hard QA 仍然是单视频自构造验证。为了进一步接近真实 streaming VQA，本轮使用 VStream-QA / RVS-Movie 的真实小子集：
+
+```text
+dataset: RVS-Movie subset
+videos: 8
+questions: 24
+model: LLaVA-OneVision-Qwen2-7B
+sample_fps: 0.2
+retrieve_size: 4
+```
+
+当前 RVS-Movie 视频资产已完成下载、解包和链接：
+
+```text
+/home/mllm/datasets/vstream_qa/frames/rvs_movie
+data/rvs/movie/videos/*.mp4
+```
+
+这里的 `.mp4` 是软链接目录入口，内部是 MovieNet realtime frame images。`rekv_stream_vqa.py` 已支持递归读取 frame directory。
+
+### 评估说明
+
+当前还没有接入官方 RVS evaluator 或 LLM judge。本轮使用 `scripts/evaluate_open_qa_overlap.py` 计算 token-overlap F1，作为自动化粗筛：
+
+```text
+token-F1 只用于发现明显崩坏，不作为最终论文 QA 指标。
+```
+
+RVS-Movie 的 open-ended answer 很抽象，例如“tense and vigilant atmosphere”“covert communication”，所以 token-F1 会明显低估同义改写。
+
+### Debug 单视频观察
+
+第一条 MovieNet 样本上，dense 7B 在 `sample_fps=0.2` 下本身也并不稳定：
+
+| question type | dense behavior |
+| --- | --- |
+| surveillance location | 偏到 dimly lit room |
+| atmosphere | tense / suspenseful，语义接近 |
+| precaution indicator | 偏到 fire extinguisher |
+
+这说明 RVS-Movie 比自构造 BBB 更难，也更适合触摸方法上界；但不能只用单个样本人工判断。
+
+### 8 视频小子集结果
+
+结果文件：
+
+```text
+results/rvs_movie_small/dense_7b_fps02/1_0.csv
+results/rvs_movie_small/semantic_7b_fps02_r16_t01/1_0.csv
+results/rvs_movie_small/semantic_7b_fps02_r64_t03/1_0.csv
+```
+
+自动化 overlap 评估：
+
+| method | mean token-F1 | total encode | kept frames | token reduction | speedup |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| Dense 7B | 0.0540 | 62.32s | 811/811 | 0.0% | 1.00x |
+| Semantic r16 t0.1 | 0.0694 | 11.18s | 119/811 | 85.3% | 5.57x |
+| Semantic r64 t0.3 | 0.0504 | 8.16s | 56/811 | 93.1% | 7.64x |
+
+### 现象分析
+
+1. RVS-Movie 上的真实长流式视觉输入明显放大了 semantic stream 的速度收益。
+2. 保守点 `refresh=16, threshold=0.1` 是当前更稳的默认候选：速度提升 `5.57x`，token 写入下降 `85.3%`，token-F1 粗评甚至高于 dense。
+3. 激进点 `refresh=64, threshold=0.3` 进一步把 token 写入下降到 `93.1%`，速度提升 `7.64x`，但 token-F1 略低于 dense，适合作为速度上界配置。
+4. dense 本身在 RVS-Movie 上存在较大回答偏差，因此后续必须接入更可靠的 LLM judge / 官方 evaluator，不能只靠 token-F1 下最终结论。
+
+### 当前结论
+
+这轮结果第一次在真实 RVS-Movie 小子集上支持了我们的核心目标：
+
+```text
+Sparse semantic stream can reduce both visual compute and visual token writing
+by a large margin while keeping QA behavior close to dense on a real streaming QA subset.
+```
+
+更重要的是，RVS-Movie 的增益比 BBB hard QA 更大，说明当视频更长、视觉 token 更密集时，语义流稀疏化确实更接近我们的论文目标。
+
+### 下一步
+
+1. 等 RVS-Ego 下载完成后，重复同样实验；
+2. 为 RVS open-ended QA 接入 LLM judge，避免 token-F1 低估语义等价回答；
+3. 在 RVS-Movie 上跑 3 次 repeat，报告 mean / median / p90；
+4. 增加 ReKV cache block 写入统计，让 token reduction 与实际 cache memory / retrieval cost 对齐。
