@@ -2,8 +2,10 @@ import torch
 import numpy as np
 import time
 import json
+from pathlib import Path
 from logzero import logger
 from decord import VideoReader, cpu
+import imageio.v3 as iio
 
 from video_qa.base import BaseVQA, work
 
@@ -15,6 +17,21 @@ class ReKVStreamVQA(BaseVQA):
             torch.cuda.synchronize()
 
     def load_video(self, video_path):
+        video_path_obj = Path(video_path)
+        if video_path_obj.is_dir():
+            frame_paths = sorted(
+                [
+                    path
+                    for path in video_path_obj.iterdir()
+                    if path.suffix.lower() in {".jpg", ".jpeg", ".png", ".webp"}
+                ]
+            )
+            assert frame_paths, f"No image frames found in {video_path}"
+            assert self.sample_fps <= 1
+            step = max(1, round(1 / self.sample_fps))
+            sampled_paths = frame_paths[::step]
+            return np.stack([iio.imread(path) for path in sampled_paths])
+
         if video_path.endswith('.npy'):  # FPS=1
             video = np.load(video_path)
             assert self.sample_fps <= 1
