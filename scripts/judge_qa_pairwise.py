@@ -10,7 +10,8 @@ from transformers import AutoConfig, AutoModelForCausalLM, AutoTokenizer
 
 SYSTEM_PROMPT = """You are an impartial evaluator for open-ended video question answering.
 Judge whether each answer captures the essential meaning of the reference answer.
-Ignore wording differences. Penalize missing key facts, wrong objects, wrong actions, or conflicting details.
+Ignore wording differences. Do not penalize harmless extra details unless they contradict the reference answer.
+Penalize missing key facts, wrong objects, wrong actions, or conflicting details.
 Return JSON only."""
 
 
