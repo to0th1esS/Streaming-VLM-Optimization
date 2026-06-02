@@ -5,7 +5,7 @@ import re
 from pathlib import Path
 
 import torch
-from transformers import AutoModelForCausalLM, AutoTokenizer
+from transformers import AutoConfig, AutoModelForCausalLM, AutoTokenizer
 
 
 SYSTEM_PROMPT = """You are an impartial evaluator for open-ended video question answering.
@@ -57,7 +57,23 @@ def write_json(path: Path, data):
         json.dump(data, handle, ensure_ascii=False, indent=2)
 
 
-def load_model(model_path: str, device: str):
+def load_model(model_path: str, device: str, model_family: str):
+    if model_family == "auto":
+        config = AutoConfig.from_pretrained(model_path, trust_remote_code=True)
+        model_family = "qwen2_5_vl" if config.model_type == "qwen2_5_vl" else "causal"
+    if model_family == "qwen2_5_vl":
+        from transformers import AutoProcessor, Qwen2_5_VLForConditionalGeneration
+
+        processor = AutoProcessor.from_pretrained(model_path, trust_remote_code=True)
+        kwargs = {"trust_remote_code": True}
+        if device == "cuda":
+            kwargs.update({"device_map": "auto", "torch_dtype": torch.bfloat16})
+        model = Qwen2_5_VLForConditionalGeneration.from_pretrained(model_path, **kwargs)
+        if device != "cuda":
+            model = model.to(device)
+        model.eval()
+        return {"family": model_family, "processor": processor, "model": model, "device": device}
+
     tokenizer = AutoTokenizer.from_pretrained(model_path, trust_remote_code=True)
     kwargs = {"trust_remote_code": True}
     if device == "cuda":
@@ -66,7 +82,7 @@ def load_model(model_path: str, device: str):
     if device != "cuda":
         model = model.to(device)
     model.eval()
-    return tokenizer, model
+    return {"family": model_family, "tokenizer": tokenizer, "model": model, "device": device}
 
 
 def build_prompt(row):
@@ -90,7 +106,10 @@ def apply_chat_template(tokenizer, messages):
         return tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
 
 
-def generate_judgment(tokenizer, model, device, row, max_new_tokens):
+def causal_generate(runtime, row, max_new_tokens):
+    tokenizer = runtime["tokenizer"]
+    model = runtime["model"]
+    device = runtime["device"]
     messages = [
         {"role": "system", "content": SYSTEM_PROMPT},
         {"role": "user", "content": build_prompt(row)},
@@ -108,6 +127,34 @@ def generate_judgment(tokenizer, model, device, row, max_new_tokens):
         )
     generated = output_ids[0][inputs.input_ids.shape[-1] :]
     return tokenizer.decode(generated, skip_special_tokens=True).strip()
+
+
+def qwen2_5_vl_generate(runtime, row, max_new_tokens):
+    processor = runtime["processor"]
+    model = runtime["model"]
+    prompt = build_prompt(row)
+    messages = [
+        {"role": "system", "content": [{"type": "text", "text": SYSTEM_PROMPT}]},
+        {"role": "user", "content": [{"type": "text", "text": prompt}]},
+    ]
+    text = processor.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
+    inputs = processor(text=[text], padding=True, return_tensors="pt").to(model.device)
+    with torch.no_grad():
+        output_ids = model.generate(
+            **inputs,
+            max_new_tokens=max_new_tokens,
+            do_sample=False,
+            temperature=None,
+            top_p=None,
+        )
+    generated = output_ids[0][inputs.input_ids.shape[-1] :]
+    return processor.tokenizer.decode(generated, skip_special_tokens=True).strip()
+
+
+def generate_judgment(runtime, row, max_new_tokens):
+    if runtime["family"] == "qwen2_5_vl":
+        return qwen2_5_vl_generate(runtime, row, max_new_tokens)
+    return causal_generate(runtime, row, max_new_tokens)
 
 
 def parse_bool(value):
@@ -189,10 +236,10 @@ def judge_file(args):
     rows = read_csv(Path(args.input_csv))
     if args.max_samples:
         rows = rows[: args.max_samples]
-    tokenizer, model = load_model(args.judge_model, args.device)
+    runtime = load_model(args.judge_model, args.device, args.model_family)
     judged_rows = []
     for idx, row in enumerate(rows):
-        raw = generate_judgment(tokenizer, model, args.device, row, args.max_new_tokens)
+        raw = generate_judgment(runtime, row, args.max_new_tokens)
         parsed = parse_judgment(raw)
         judged = {
             **row,
@@ -228,6 +275,7 @@ def parse_args():
     parser.add_argument("--output-csv", required=True)
     parser.add_argument("--output-json", required=True)
     parser.add_argument("--judge-model", default="/home/mllm/models/Qwen3-0.6B")
+    parser.add_argument("--model-family", choices=["auto", "causal", "qwen2_5_vl"], default="auto")
     parser.add_argument("--device", choices=["cuda", "cpu"], default="cuda")
     parser.add_argument("--max-new-tokens", type=int, default=160)
     parser.add_argument("--max-samples", type=int, default=0)
