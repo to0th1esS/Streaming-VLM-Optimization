@@ -1,6 +1,7 @@
 import torch
 import numpy as np
 import time
+import json
 from logzero import logger
 from decord import VideoReader, cpu
 
@@ -92,6 +93,10 @@ class ReKVStreamVQA(BaseVQA):
                 'video_id': video_sample['video_id'],
                 'question': question,
                 'answer': answer,
+                'answer_type': sample.get('answer_type', ''),
+                'eval_all': json.dumps(sample.get('eval_all', []), ensure_ascii=False),
+                'eval_any': json.dumps(sample.get('eval_any', []), ensure_ascii=False),
+                'eval_not': json.dumps(sample.get('eval_not', []), ensure_ascii=False),
                 'pred_answer': qa_results['pred_answer'],
                 'sample_fps': self.sample_fps,
                 'loaded_frames': int(len(video)),

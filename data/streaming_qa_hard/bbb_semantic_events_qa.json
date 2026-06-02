@@ -1,0 +1,96 @@
+[
+  {
+    "video_id": "big_buck_bunny_semantic_events",
+    "video_path": "data/turbovit_v1/big_buck_bunny.mp4",
+    "conversations": [
+      {
+        "question": "What title text appears at the beginning of the video?",
+        "answer": "The title says Big Buck Bunny.",
+        "answer_type": "title_ocr",
+        "start_time": 0,
+        "end_time": 4,
+        "gt_duration": 4,
+        "eval_all": [["big buck bunny", "bunny"]],
+        "eval_any": [["title", "text", "name", "big buck bunny"]],
+        "eval_not": [["real-world", "documentary"]]
+      },
+      {
+        "question": "What kind of outdoor environment is shown before any character close-up?",
+        "answer": "A bright grassy forest or meadow landscape is shown.",
+        "answer_type": "scene",
+        "start_time": 0,
+        "end_time": 8,
+        "gt_duration": 8,
+        "eval_all": [["grass", "grassy", "meadow", "field"], ["forest", "trees", "outdoor", "nature"]],
+        "eval_any": [["bright", "sunny", "green", "landscape"]],
+        "eval_not": [["kitchen", "indoor", "city"]]
+      },
+      {
+        "question": "What small animal appears on a branch around the early close-up?",
+        "answer": "A small gray bird-like animal appears on a branch.",
+        "answer_type": "object",
+        "start_time": 0,
+        "end_time": 20,
+        "gt_duration": 20,
+        "eval_all": [["bird", "small animal", "squirrel"], ["branch", "tree"]],
+        "eval_any": [["gray", "grey", "perched", "standing"]],
+        "eval_not": [["rabbit", "bunny"]]
+      },
+      {
+        "question": "Before the rabbit appears, what dark place is visible under the grass and rocks?",
+        "answer": "A dark burrow or hole is visible.",
+        "answer_type": "object",
+        "start_time": 0,
+        "end_time": 44,
+        "gt_duration": 44,
+        "eval_all": [["hole", "burrow", "cave"], ["dark"]],
+        "eval_any": [["rocks", "grass", "entrance"]],
+        "eval_not": [["house", "kitchen", "car"]]
+      },
+      {
+        "question": "Has the large white rabbit clearly appeared by the time the dark hole is shown?",
+        "answer": "No, the large white rabbit has not clearly appeared yet.",
+        "answer_type": "temporal_negative",
+        "start_time": 0,
+        "end_time": 44,
+        "gt_duration": 44,
+        "eval_all": [["no", "not", "hasn't", "has not"]],
+        "eval_any": [["rabbit", "bunny"]],
+        "eval_not": [["yes", "clearly appeared"]]
+      },
+      {
+        "question": "What large character is lying near the burrow after the dark-hole scene?",
+        "answer": "A large white rabbit is lying near the burrow.",
+        "answer_type": "event",
+        "start_time": 0,
+        "end_time": 48,
+        "gt_duration": 48,
+        "eval_all": [["rabbit", "bunny"], ["white"], ["lying", "laying", "resting", "sleeping"]],
+        "eval_any": [["burrow", "hole", "grass"]],
+        "eval_not": [["bird", "squirrel"]]
+      },
+      {
+        "question": "What does the rabbit do after it is lying down?",
+        "answer": "The rabbit gets up and stands near the burrow.",
+        "answer_type": "action_change",
+        "start_time": 0,
+        "end_time": 52,
+        "gt_duration": 52,
+        "eval_all": [["rabbit", "bunny"], ["stand", "stands", "standing", "gets up", "upright"]],
+        "eval_any": [["burrow", "hole", "grass"]],
+        "eval_not": [["flying", "swimming"]]
+      },
+      {
+        "question": "What direction or action does the rabbit take near the end of this clip?",
+        "answer": "The rabbit walks away from the burrow across the grass.",
+        "answer_type": "motion",
+        "start_time": 0,
+        "end_time": 56,
+        "gt_duration": 56,
+        "eval_all": [["rabbit", "bunny"], ["walk", "walking", "moves", "moving"]],
+        "eval_any": [["away", "grass", "burrow", "hole"]],
+        "eval_not": [["stays asleep", "still lying"]]
+      }
+    ]
+  }
+]

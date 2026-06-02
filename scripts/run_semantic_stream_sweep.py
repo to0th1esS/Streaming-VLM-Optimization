@@ -70,6 +70,39 @@ def tiny_answer_pass(row):
     return bool(pred.strip())
 
 
+def _load_json_list(value):
+    if value is None:
+        return []
+    if not str(value).strip():
+        return []
+    try:
+        parsed = json.loads(value)
+    except json.JSONDecodeError:
+        return []
+    return parsed if isinstance(parsed, list) else []
+
+
+def _matches_term_group(pred, group):
+    if isinstance(group, str):
+        return group.lower() in pred
+    if isinstance(group, list):
+        return any(str(term).lower() in pred for term in group)
+    return False
+
+
+def rule_based_answer_pass(row):
+    pred = row["pred_answer"].lower()
+    eval_all = _load_json_list(row.get("eval_all"))
+    eval_any = _load_json_list(row.get("eval_any"))
+    eval_not = _load_json_list(row.get("eval_not"))
+    if eval_all or eval_any or eval_not:
+        all_ok = all(_matches_term_group(pred, group) for group in eval_all)
+        any_ok = True if not eval_any else any(_matches_term_group(pred, group) for group in eval_any)
+        not_ok = not any(_matches_term_group(pred, group) for group in eval_not)
+        return all_ok and any_ok and not_ok
+    return tiny_answer_pass(row)
+
+
 def summarize_run(rows, config):
     final = rows[-1]
     input_tokens = int(float(final.get("semantic_input_tokens", 0)))
@@ -77,7 +110,7 @@ def summarize_run(rows, config):
     input_frames = int(float(final.get("semantic_input_frames", 0)))
     kept_frames = int(float(final.get("semantic_kept_frames", 0)))
     skipped_frames = int(float(final.get("semantic_skipped_frames", 0)))
-    qa_passes = [tiny_answer_pass(row) for row in rows]
+    qa_passes = [rule_based_answer_pass(row) for row in rows]
     token_reduction = 1.0 - (written_tokens / input_tokens) if input_tokens else 0.0
     frame_reduction = 1.0 - (kept_frames / input_frames) if input_frames else 0.0
     return {
