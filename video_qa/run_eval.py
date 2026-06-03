@@ -29,6 +29,7 @@ def append_semantic_stream_args(cmd, args):
         "--semantic_recency_keep_frames", str(args.semantic_recency_keep_frames),
         "--semantic_recency_updates_anchor", str(args.semantic_recency_updates_anchor),
         "--enable_query_aware_retrieval", str(args.enable_query_aware_retrieval),
+        "--query_retrieval_policy", str(args.query_retrieval_policy),
         "--latest_retrieval_blocks", str(args.latest_retrieval_blocks),
         "--latest_query_terms", str(args.latest_query_terms),
     ])
@@ -294,6 +295,11 @@ if __name__ == "__main__":
     parser.add_argument("--semantic_recency_keep_frames", type=int, default=0)
     parser.add_argument("--semantic_recency_updates_anchor", type=str, default='false')
     parser.add_argument("--enable_query_aware_retrieval", type=str, default='false')
+    parser.add_argument(
+        "--query_retrieval_policy",
+        choices=["internal", "latest_recent", "always_recent"],
+        default="latest_recent",
+    )
     parser.add_argument("--latest_retrieval_blocks", type=int, default=0)
     parser.add_argument(
         "--latest_query_terms",

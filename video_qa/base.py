@@ -207,6 +207,11 @@ def work(QA_CLASS):
     parser.add_argument("--semantic_recency_keep_frames", type=int, default=0)
     parser.add_argument("--semantic_recency_updates_anchor", type=str2bool, nargs='?', const=True, default=False)
     parser.add_argument("--enable_query_aware_retrieval", type=str2bool, nargs='?', const=True, default=False)
+    parser.add_argument(
+        "--query_retrieval_policy",
+        choices=["internal", "latest_recent", "always_recent"],
+        default="latest_recent",
+    )
     parser.add_argument("--latest_retrieval_blocks", type=int, default=0)
     parser.add_argument(
         "--latest_query_terms",
@@ -270,6 +275,7 @@ def work(QA_CLASS):
         save_dir=args.save_dir,
     )
     retrieve_analyzer.enable_query_aware_retrieval = args.enable_query_aware_retrieval
+    retrieve_analyzer.query_retrieval_policy = args.query_retrieval_policy
     retrieve_analyzer.latest_retrieval_blocks = args.latest_retrieval_blocks
     retrieve_analyzer.latest_query_terms = [
         term.strip().lower()

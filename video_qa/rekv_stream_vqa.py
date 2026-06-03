@@ -96,14 +96,19 @@ class ReKVStreamVQA(BaseVQA):
     def _build_query_aware_retrieval(self, question):
         if not getattr(self, "enable_query_aware_retrieval", False):
             return None, "internal", self._retrievable_block_count(), 0
-        if not self._is_latest_query(question):
+        policy = getattr(self, "query_retrieval_policy", "latest_recent")
+        if policy == "internal":
             return None, "internal", self._retrievable_block_count(), 0
+        if policy == "latest_recent" and not self._is_latest_query(question):
+            return None, "internal", self._retrievable_block_count(), 0
+        if policy not in {"latest_recent", "always_recent"}:
+            raise ValueError(f"Unknown query_retrieval_policy: {policy}")
         retrieved_indices, total_blocks, kept_blocks = self._recent_retrieved_indices(
             getattr(self, "latest_retrieval_blocks", 0)
         )
         if retrieved_indices is None:
             return None, "internal", total_blocks, 0
-        return retrieved_indices, "latest_recent", total_blocks, kept_blocks
+        return retrieved_indices, policy, total_blocks, kept_blocks
 
     @torch.inference_mode()
     def analyze_a_video(self, video_sample):
