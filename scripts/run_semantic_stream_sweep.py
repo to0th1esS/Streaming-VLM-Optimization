@@ -110,6 +110,7 @@ def summarize_run(rows, config):
     input_frames = int(float(final.get("semantic_input_frames", 0)))
     kept_frames = int(float(final.get("semantic_kept_frames", 0)))
     skipped_frames = int(float(final.get("semantic_skipped_frames", 0)))
+    recency_kept_frames = int(float(final.get("semantic_recency_kept_frames", 0)))
     qa_passes = [rule_based_answer_pass(row) for row in rows]
     token_reduction = 1.0 - (written_tokens / input_tokens) if input_tokens else 0.0
     frame_reduction = 1.0 - (kept_frames / input_frames) if input_frames else 0.0
@@ -121,6 +122,7 @@ def summarize_run(rows, config):
         "input_frames": input_frames,
         "kept_frames": kept_frames,
         "skipped_frames": skipped_frames,
+        "recency_kept_frames": recency_kept_frames,
         "kept_frame_ratio": kept_frames / input_frames if input_frames else 0.0,
         "frame_reduction": frame_reduction,
         "input_tokens": input_tokens,
@@ -143,6 +145,8 @@ def aggregate_rows(rows):
             row["skip_threshold"],
             row["compute_gate"],
             row["enable_vit_layer_sparse"],
+            row["semantic_recency_keep_frames"],
+            row["semantic_recency_updates_anchor"],
         )
         grouped.setdefault(key, []).append(row)
 
@@ -160,12 +164,15 @@ def aggregate_rows(rows):
                 "skip_threshold": key[3],
                 "compute_gate": key[4],
                 "enable_vit_layer_sparse": key[5],
+                "semantic_recency_keep_frames": key[6],
+                "semantic_recency_updates_anchor": key[7],
                 "repeats": len(group),
                 "qa_pass_rate": sum(qa_values) / len(qa_values),
                 "qa_pass_count_mean": statistics.mean(int(row["qa_pass_count"]) for row in group),
                 "qa_total": first["qa_total"],
                 "input_frames": first["input_frames"],
                 "kept_frames_mean": statistics.mean(float(row["kept_frames"]) for row in group),
+                "recency_kept_frames_mean": statistics.mean(float(row["recency_kept_frames"]) for row in group),
                 "token_reduction_mean": statistics.mean(float(row["token_reduction"]) for row in group),
                 "encode_mean_sec": statistics.mean(encode_values),
                 "encode_median_sec": statistics.median(encode_values),
@@ -180,7 +187,9 @@ def aggregate_rows(rows):
 def run_one(args, output_dir: Path, refresh_interval: int, threshold: float, compute_gate: bool, repeat_idx: int):
     tag = (
         f"{args.model}_fps{args.sample_fps:g}_r{refresh_interval}_t{threshold:g}_"
-        f"compute{int(compute_gate)}_layer{int(args.enable_vit_layer_sparse)}_rep{repeat_idx}"
+        f"compute{int(compute_gate)}_layer{int(args.enable_vit_layer_sparse)}_"
+        f"recent{args.semantic_recency_keep_frames}_"
+        f"anchor{int(args.semantic_recency_updates_anchor)}_rep{repeat_idx}"
     ).replace(".", "p")
     save_dir = output_dir / "runs" / tag
     cmd = [
@@ -217,6 +226,10 @@ def run_one(args, output_dir: Path, refresh_interval: int, threshold: float, com
         str(refresh_interval),
         "--semantic_skip_threshold",
         str(threshold),
+        "--semantic_recency_keep_frames",
+        str(args.semantic_recency_keep_frames),
+        "--semantic_recency_updates_anchor",
+        str(args.semantic_recency_updates_anchor).lower(),
         "--debug",
         str(args.debug).lower(),
     ]
@@ -231,6 +244,8 @@ def run_one(args, output_dir: Path, refresh_interval: int, threshold: float, com
             "skip_threshold": threshold,
             "compute_gate": int(compute_gate),
             "enable_vit_layer_sparse": int(args.enable_vit_layer_sparse),
+            "semantic_recency_keep_frames": args.semantic_recency_keep_frames,
+            "semantic_recency_updates_anchor": int(args.semantic_recency_updates_anchor),
             "repeat_idx": repeat_idx,
             "save_dir": str(save_dir),
         },
@@ -252,6 +267,8 @@ def parse_args():
     parser.add_argument("--refresh-intervals", default="2,4,8,16")
     parser.add_argument("--thresholds", default="0.005,0.01,0.03")
     parser.add_argument("--compute-gates", default="true,false")
+    parser.add_argument("--semantic-recency-keep-frames", type=int, default=0)
+    parser.add_argument("--semantic-recency-updates-anchor", type=str2bool, default=False)
     parser.add_argument("--repeats", type=int, default=1)
     parser.add_argument("--debug", type=str2bool, default=True)
     return parser.parse_args()

@@ -26,6 +26,8 @@ def append_semantic_stream_args(cmd, args):
         "--enable_semantic_compute_gate", str(args.enable_semantic_compute_gate),
         "--semantic_refresh_interval", str(args.semantic_refresh_interval),
         "--semantic_skip_threshold", str(args.semantic_skip_threshold),
+        "--semantic_recency_keep_frames", str(args.semantic_recency_keep_frames),
+        "--semantic_recency_updates_anchor", str(args.semantic_recency_updates_anchor),
     ])
     return cmd
 
@@ -286,6 +288,8 @@ if __name__ == "__main__":
     parser.add_argument("--enable_semantic_compute_gate", type=str, default='false')
     parser.add_argument("--semantic_refresh_interval", type=int, default=4)
     parser.add_argument("--semantic_skip_threshold", type=float, default=0.01)
+    parser.add_argument("--semantic_recency_keep_frames", type=int, default=0)
+    parser.add_argument("--semantic_recency_updates_anchor", type=str, default='false')
     parser.add_argument("--debug", type=str, default='false')
     args = parser.parse_args()
     func_dic = {

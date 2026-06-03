@@ -204,6 +204,8 @@ def work(QA_CLASS):
     parser.add_argument("--enable_semantic_compute_gate", type=str2bool, nargs='?', const=True, default=False)
     parser.add_argument("--semantic_refresh_interval", type=int, default=4)
     parser.add_argument("--semantic_skip_threshold", type=float, default=0.01)
+    parser.add_argument("--semantic_recency_keep_frames", type=int, default=0)
+    parser.add_argument("--semantic_recency_updates_anchor", type=str2bool, nargs='?', const=True, default=False)
     parser.add_argument("--debug", type=str2bool, nargs='?', const=True, default=True)
     args = parser.parse_args()
 
@@ -239,6 +241,8 @@ def work(QA_CLASS):
                     "enable_semantic_compute_gate": args.enable_semantic_compute_gate,
                     "semantic_refresh_interval": args.semantic_refresh_interval,
                     "semantic_skip_threshold": args.semantic_skip_threshold,
+                    "semantic_recency_keep_frames": args.semantic_recency_keep_frames,
+                    "semantic_recency_updates_anchor": args.semantic_recency_updates_anchor,
                 },
             }
         )

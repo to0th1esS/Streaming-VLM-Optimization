@@ -92,6 +92,9 @@ class ReKVStreamVQA(BaseVQA):
                 new_frames = max(0, encode_end_idx - encode_start_idx)
                 self._sync_cuda()
                 encode_start = time.perf_counter()
+                semantic_gate = getattr(self.qa_model, "semantic_stream_gate", None)
+                if semantic_gate is not None and hasattr(semantic_gate, "set_recency_window"):
+                    semantic_gate.set_recency_window(encode_start_idx, encode_end_idx)
                 self.qa_model.encode_video(video_tensor[encode_start_idx:encode_end_idx])
                 self._sync_cuda()
                 encode_video_sec = time.perf_counter() - encode_start
@@ -128,6 +131,7 @@ class ReKVStreamVQA(BaseVQA):
                 'semantic_input_frames': semantic_stats.get("input_frames", 0),
                 'semantic_kept_frames': semantic_stats.get("kept_frames", 0),
                 'semantic_skipped_frames': semantic_stats.get("skipped_frames", 0),
+                'semantic_recency_kept_frames': semantic_stats.get("recency_kept_frames", 0),
                 'semantic_input_tokens': semantic_stats.get("input_tokens", 0),
                 'semantic_written_tokens': semantic_stats.get("written_tokens", 0),
             })
