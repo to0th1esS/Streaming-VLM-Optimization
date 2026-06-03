@@ -1,0 +1,88 @@
+<mxfile host="app.diagrams.net" modified="2026-06-03T16:30:00.000Z" agent="Codex" version="24.7.17" type="device">
+  <diagram id="streaming-vlm-route" name="Streaming VLM Design Route">
+    <mxGraphModel dx="1600" dy="1000" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="1800" pageHeight="1200" math="0" shadow="0">
+      <root>
+        <mxCell id="0"/>
+        <mxCell id="1" parent="0"/>
+        <mxCell id="title" value="Streaming VLM Optimization: from ViT Feature Reuse to Query-aware Semantic Stream Routing" style="text;html=1;strokeColor=none;fillColor=none;fontSize=22;fontStyle=1;align=center;verticalAlign=middle;" vertex="1" parent="1">
+          <mxGeometry x="140" y="20" width="1520" height="40" as="geometry"/>
+        </mxCell>
+        <mxCell id="p1" value="Phase 1: ViT Sparse Recompute&lt;br&gt;Goal: reuse inter-frame redundancy inside ViT" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;fontSize=15;fontStyle=1;" vertex="1" parent="1">
+          <mxGeometry x="60" y="100" width="300" height="80" as="geometry"/>
+        </mxCell>
+        <mxCell id="p1a" value="v1 layer-wise token update&lt;br&gt;High feature fidelity, but selector/top-k/gather/scatter overhead dominates on GPU." style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;fontSize=13;" vertex="1" parent="1">
+          <mxGeometry x="60" y="220" width="300" height="100" as="geometry"/>
+        </mxCell>
+        <mxCell id="p1b" value="v2-v8 routing, dual-anchor, segment, K/V reuse&lt;br&gt;Signals improve, but non-fused sparse tensor execution becomes the boundary." style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;fontSize=13;" vertex="1" parent="1">
+          <mxGeometry x="60" y="360" width="300" height="110" as="geometry"/>
+        </mxCell>
+        <mxCell id="ins1" value="Insight 1&lt;br&gt;Do not present final method as dense feature reconstruction. Feature cosine/MSE is diagnostic, not the main objective." style="rounded=1;whiteSpace=wrap;html=1;fillColor=#f8cecc;strokeColor=#b85450;fontSize=13;" vertex="1" parent="1">
+          <mxGeometry x="60" y="520" width="300" height="110" as="geometry"/>
+        </mxCell>
+        <mxCell id="p2" value="Phase 2: QA-first Sparse Semantic Stream&lt;br&gt;Goal: sparse visual writing under QA constraint" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;fontSize=15;fontStyle=1;" vertex="1" parent="1">
+          <mxGeometry x="500" y="100" width="330" height="80" as="geometry"/>
+        </mxCell>
+        <mxCell id="p2a" value="Semantic Stream Gate&lt;br&gt;reference / refresh / drift_keep / skip&lt;br&gt;Compute gate + writing gate share one semantic stability signal." style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;fontSize=13;" vertex="1" parent="1">
+          <mxGeometry x="500" y="220" width="330" height="110" as="geometry"/>
+        </mxCell>
+        <mxCell id="p2b" value="RVS-Movie repeat3&lt;br&gt;r16: 5.86x, 85.3% token reduction&lt;br&gt;r64: 8.59x, 93.1% token reduction" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#e2f0d9;strokeColor=#82b366;fontSize=13;" vertex="1" parent="1">
+          <mxGeometry x="500" y="370" width="330" height="105" as="geometry"/>
+        </mxCell>
+        <mxCell id="p2c" value="RVS-Ego repeat3 + judge&lt;br&gt;r16: 2.91x, 84.5% reduction, no loss&lt;br&gt;r64: 3.67x, 93.8% reduction, one scene_latest loss" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#e2f0d9;strokeColor=#82b366;fontSize=13;" vertex="1" parent="1">
+          <mxGeometry x="500" y="515" width="330" height="120" as="geometry"/>
+        </mxCell>
+        <mxCell id="ins2" value="Insight 2&lt;br&gt;A dense video should be converted into a sparse semantic event stream, not approximated frame-by-frame." style="rounded=1;whiteSpace=wrap;html=1;fillColor=#f8cecc;strokeColor=#b85450;fontSize=13;" vertex="1" parent="1">
+          <mxGeometry x="500" y="680" width="330" height="100" as="geometry"/>
+        </mxCell>
+        <mxCell id="p3" value="Phase 3: Current-state Correction&lt;br&gt;Goal: repair latest/current-state risk" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#f8cecc;strokeColor=#b85450;fontSize=15;fontStyle=1;" vertex="1" parent="1">
+          <mxGeometry x="950" y="100" width="330" height="80" as="geometry"/>
+        </mxCell>
+        <mxCell id="p3a" value="Recency Correction&lt;br&gt;Force-write recent K frames before QA&lt;br&gt;K=4: 3.49x, 92.33% reduction, W/T/L 9/15/0" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#f8cecc;strokeColor=#b85450;fontSize=13;" vertex="1" parent="1">
+          <mxGeometry x="950" y="220" width="330" height="115" as="geometry"/>
+        </mxCell>
+        <mxCell id="p3b" value="Failure after recency only&lt;br&gt;latest clip still mentions stale 'Christmas tree'.&lt;br&gt;Conclusion: not just missing recent frames; old visual KV still interferes." style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffe6cc;strokeColor=#d79b00;fontSize=13;" vertex="1" parent="1">
+          <mxGeometry x="950" y="375" width="330" height="120" as="geometry"/>
+        </mxCell>
+        <mxCell id="ins3" value="Insight 3&lt;br&gt;Need two states: long-horizon semantic memory + short-horizon current-state buffer." style="rounded=1;whiteSpace=wrap;html=1;fillColor=#f8cecc;strokeColor=#b85450;fontSize=13;" vertex="1" parent="1">
+          <mxGeometry x="950" y="535" width="330" height="100" as="geometry"/>
+        </mxCell>
+        <mxCell id="p4" value="Phase 4: Query-aware Temporal Routing&lt;br&gt;Goal: select the right visual state at question time" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#e1d5e7;strokeColor=#9673a6;fontSize=15;fontStyle=1;" vertex="1" parent="1">
+          <mxGeometry x="1400" y="100" width="330" height="80" as="geometry"/>
+        </mxCell>
+        <mxCell id="p4a" value="Query-aware Recent Retrieval&lt;br&gt;latest/current/setting queries use recent N visual blocks; other queries use internal ReKV retrieval." style="rounded=1;whiteSpace=wrap;html=1;fillColor=#e1d5e7;strokeColor=#9673a6;fontSize=13;" vertex="1" parent="1">
+          <mxGeometry x="1400" y="220" width="330" height="115" as="geometry"/>
+        </mxCell>
+        <mxCell id="p4b" value="Best current candidate&lt;br&gt;r64/t0.3 + recency K=4 + qrb=4&lt;br&gt;RVS-Ego repeat3: 3.72x-3.79x, 92.33% reduction, W/T/L 10/14/0" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#e1d5e7;strokeColor=#9673a6;fontSize=13;" vertex="1" parent="1">
+          <mxGeometry x="1400" y="375" width="330" height="125" as="geometry"/>
+        </mxCell>
+        <mxCell id="p4c" value="Judge result&lt;br&gt;Sparse correct 66.7% vs dense 61.9%&lt;br&gt;scene_latest 83.3% vs dense 66.7%&lt;br&gt;No dense-only loss" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#e1d5e7;strokeColor=#9673a6;fontSize=13;" vertex="1" parent="1">
+          <mxGeometry x="1400" y="540" width="330" height="120" as="geometry"/>
+        </mxCell>
+        <mxCell id="final" value="Paper-level Method Direction&lt;br&gt;Query-aware Sparse Semantic Stream Routing&lt;br&gt;Sparse semantic memory + current-state buffer + query-time temporal routing" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;fontSize=16;fontStyle=1;" vertex="1" parent="1">
+          <mxGeometry x="960" y="840" width="470" height="105" as="geometry"/>
+        </mxCell>
+        <mxCell id="next" value="Next Research Plan&lt;br&gt;1. Replace keyword routing with lightweight query classifier&lt;br&gt;2. Add long-horizon/action/object routing&lt;br&gt;3. Validate on RVS-Movie and larger streaming VQA benchmarks&lt;br&gt;4. Report compute, visual write, KV/cache, QA judge together" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;fontSize=13;" vertex="1" parent="1">
+          <mxGeometry x="1480" y="820" width="310" height="150" as="geometry"/>
+        </mxCell>
+        <mxCell id="e1" style="endArrow=block;html=1;strokeWidth=2;strokeColor=#666666;" edge="1" parent="1" source="p1" target="p1a"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="e2" style="endArrow=block;html=1;strokeWidth=2;strokeColor=#666666;" edge="1" parent="1" source="p1a" target="p1b"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="e3" style="endArrow=block;html=1;strokeWidth=2;strokeColor=#666666;" edge="1" parent="1" source="p1b" target="ins1"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="e4" style="endArrow=block;html=1;strokeWidth=2;strokeColor=#666666;" edge="1" parent="1" source="ins1" target="p2"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="e5" style="endArrow=block;html=1;strokeWidth=2;strokeColor=#666666;" edge="1" parent="1" source="p2" target="p2a"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="e6" style="endArrow=block;html=1;strokeWidth=2;strokeColor=#666666;" edge="1" parent="1" source="p2a" target="p2b"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="e7" style="endArrow=block;html=1;strokeWidth=2;strokeColor=#666666;" edge="1" parent="1" source="p2b" target="p2c"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="e8" style="endArrow=block;html=1;strokeWidth=2;strokeColor=#666666;" edge="1" parent="1" source="p2c" target="ins2"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="e9" style="endArrow=block;html=1;strokeWidth=2;strokeColor=#666666;" edge="1" parent="1" source="ins2" target="p3"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="e10" style="endArrow=block;html=1;strokeWidth=2;strokeColor=#666666;" edge="1" parent="1" source="p3" target="p3a"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="e11" style="endArrow=block;html=1;strokeWidth=2;strokeColor=#666666;" edge="1" parent="1" source="p3a" target="p3b"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="e12" style="endArrow=block;html=1;strokeWidth=2;strokeColor=#666666;" edge="1" parent="1" source="p3b" target="ins3"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="e13" style="endArrow=block;html=1;strokeWidth=2;strokeColor=#666666;" edge="1" parent="1" source="ins3" target="p4"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="e14" style="endArrow=block;html=1;strokeWidth=2;strokeColor=#666666;" edge="1" parent="1" source="p4" target="p4a"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="e15" style="endArrow=block;html=1;strokeWidth=2;strokeColor=#666666;" edge="1" parent="1" source="p4a" target="p4b"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="e16" style="endArrow=block;html=1;strokeWidth=2;strokeColor=#666666;" edge="1" parent="1" source="p4b" target="p4c"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="e17" style="endArrow=block;html=1;strokeWidth=3;strokeColor=#82b366;" edge="1" parent="1" source="p4c" target="final"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="e18" style="endArrow=block;html=1;strokeWidth=2;strokeColor=#6c8ebf;" edge="1" parent="1" source="final" target="next"><mxGeometry relative="1" as="geometry"/></mxCell>
+      </root>
+    </mxGraphModel>
+  </diagram>
+</mxfile>
