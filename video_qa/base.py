@@ -206,6 +206,13 @@ def work(QA_CLASS):
     parser.add_argument("--semantic_skip_threshold", type=float, default=0.01)
     parser.add_argument("--semantic_recency_keep_frames", type=int, default=0)
     parser.add_argument("--semantic_recency_updates_anchor", type=str2bool, nargs='?', const=True, default=False)
+    parser.add_argument("--enable_query_aware_retrieval", type=str2bool, nargs='?', const=True, default=False)
+    parser.add_argument("--latest_retrieval_blocks", type=int, default=0)
+    parser.add_argument(
+        "--latest_query_terms",
+        type=str,
+        default="latest,current,currently,now,setting,where,last frame,latest clip,latest video frame",
+    )
     parser.add_argument("--debug", type=str2bool, nargs='?', const=True, default=True)
     args = parser.parse_args()
 
@@ -262,5 +269,12 @@ def work(QA_CLASS):
         chunk_idx=args.chunk_idx,
         save_dir=args.save_dir,
     )
+    retrieve_analyzer.enable_query_aware_retrieval = args.enable_query_aware_retrieval
+    retrieve_analyzer.latest_retrieval_blocks = args.latest_retrieval_blocks
+    retrieve_analyzer.latest_query_terms = [
+        term.strip().lower()
+        for term in args.latest_query_terms.split(",")
+        if term.strip()
+    ]
 
     retrieve_analyzer.analyze(debug=args.debug)

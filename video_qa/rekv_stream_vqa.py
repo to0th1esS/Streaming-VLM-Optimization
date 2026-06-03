@@ -45,16 +45,65 @@ class ReKVStreamVQA(BaseVQA):
             video = vr.get_batch(frame_idx).asnumpy()
         return video
 
-    def video_open_qa(self, question, max_new_tokens=1024):
+    def video_open_qa(self, question, max_new_tokens=1024, retrieved_indices=None):
         input_text = {
             "question": question,
             "prompt": self.qa_model.get_prompt(question)
         }
-        pred_answer = self.qa_model.question_answering(input_text, max_new_tokens=max_new_tokens)
+        pred_answer = self.qa_model.question_answering(
+            input_text,
+            max_new_tokens=max_new_tokens,
+            retrieved_indices=retrieved_indices,
+        )
 
         return {
             'pred_answer': pred_answer.replace('\n', ''),
         }
+
+    def _is_latest_query(self, question):
+        terms = getattr(self, "latest_query_terms", [])
+        question = question.lower()
+        return any(term in question for term in terms)
+
+    def _retrievable_block_count(self):
+        cache = getattr(self.qa_model, "kv_cache", None)
+        if not cache:
+            return 0
+        layer_kv = cache[0]
+        if getattr(layer_kv, "init_exc", False):
+            return int(getattr(layer_kv, "num_global_block", 0))
+        global_remainder = getattr(layer_kv, "global_remainder", None)
+        if global_remainder is None:
+            return 0
+        token_count = int(global_remainder[0].size(-2)) - int(getattr(layer_kv, "n_init", 0))
+        block_size = int(getattr(layer_kv, "block_size", self.qa_model.n_frame_tokens))
+        return max(0, token_count // block_size)
+
+    def _recent_retrieved_indices(self, keep_blocks):
+        cache = getattr(self.qa_model, "kv_cache", None)
+        if not cache or keep_blocks <= 0:
+            return None, 0, 0
+        layer_kv = cache[0]
+        total_blocks = self._retrievable_block_count()
+        if total_blocks <= 0:
+            return None, total_blocks, 0
+        kept_blocks = min(int(keep_blocks), total_blocks)
+        start_idx = total_blocks - kept_blocks
+        indices = list(range(start_idx, total_blocks))
+        num_units = int(getattr(layer_kv, "num_units", 1))
+        return [indices[:] for _ in range(num_units)], total_blocks, kept_blocks
+
+    def _build_query_aware_retrieval(self, question):
+        if not getattr(self, "enable_query_aware_retrieval", False):
+            return None, "internal", self._retrievable_block_count(), 0
+        if not self._is_latest_query(question):
+            return None, "internal", self._retrievable_block_count(), 0
+        retrieved_indices, total_blocks, kept_blocks = self._recent_retrieved_indices(
+            getattr(self, "latest_retrieval_blocks", 0)
+        )
+        if retrieved_indices is None:
+            return None, "internal", total_blocks, 0
+        return retrieved_indices, "latest_recent", total_blocks, kept_blocks
 
     @torch.inference_mode()
     def analyze_a_video(self, video_sample):
@@ -104,7 +153,14 @@ class ReKVStreamVQA(BaseVQA):
             # OpenQA
             self._sync_cuda()
             qa_start = time.perf_counter()
-            qa_results = self.video_open_qa(question, max_new_tokens=256)
+            retrieved_indices, query_route, retrievable_blocks, qa_retrieved_blocks = (
+                self._build_query_aware_retrieval(question)
+            )
+            qa_results = self.video_open_qa(
+                question,
+                max_new_tokens=256,
+                retrieved_indices=retrieved_indices,
+            )
             self._sync_cuda()
             qa_sec = time.perf_counter() - qa_start
             semantic_gate = getattr(self.qa_model, "semantic_stream_gate", None)
@@ -128,6 +184,9 @@ class ReKVStreamVQA(BaseVQA):
                 'cumulative_encode_video_sec': cumulative_encode_video_sec,
                 'qa_sec': qa_sec,
                 'elapsed_video_sec': time.perf_counter() - video_timer_start,
+                'query_route': query_route,
+                'retrievable_blocks': retrievable_blocks,
+                'qa_retrieved_blocks': qa_retrieved_blocks,
                 'semantic_input_frames': semantic_stats.get("input_frames", 0),
                 'semantic_kept_frames': semantic_stats.get("kept_frames", 0),
                 'semantic_skipped_frames': semantic_stats.get("skipped_frames", 0),

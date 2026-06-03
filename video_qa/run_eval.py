@@ -28,6 +28,9 @@ def append_semantic_stream_args(cmd, args):
         "--semantic_skip_threshold", str(args.semantic_skip_threshold),
         "--semantic_recency_keep_frames", str(args.semantic_recency_keep_frames),
         "--semantic_recency_updates_anchor", str(args.semantic_recency_updates_anchor),
+        "--enable_query_aware_retrieval", str(args.enable_query_aware_retrieval),
+        "--latest_retrieval_blocks", str(args.latest_retrieval_blocks),
+        "--latest_query_terms", str(args.latest_query_terms),
     ])
     return cmd
 
@@ -290,6 +293,13 @@ if __name__ == "__main__":
     parser.add_argument("--semantic_skip_threshold", type=float, default=0.01)
     parser.add_argument("--semantic_recency_keep_frames", type=int, default=0)
     parser.add_argument("--semantic_recency_updates_anchor", type=str, default='false')
+    parser.add_argument("--enable_query_aware_retrieval", type=str, default='false')
+    parser.add_argument("--latest_retrieval_blocks", type=int, default=0)
+    parser.add_argument(
+        "--latest_query_terms",
+        type=str,
+        default="latest,current,currently,now,setting,where,last frame,latest clip,latest video frame",
+    )
     parser.add_argument("--debug", type=str, default='false')
     args = parser.parse_args()
     func_dic = {

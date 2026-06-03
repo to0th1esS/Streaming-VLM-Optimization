@@ -112,6 +112,7 @@ def summarize_run(rows, config):
     skipped_frames = int(float(final.get("semantic_skipped_frames", 0)))
     recency_kept_frames = int(float(final.get("semantic_recency_kept_frames", 0)))
     qa_passes = [rule_based_answer_pass(row) for row in rows]
+    latest_recent_queries = sum(row.get("query_route", "") == "latest_recent" for row in rows)
     token_reduction = 1.0 - (written_tokens / input_tokens) if input_tokens else 0.0
     frame_reduction = 1.0 - (kept_frames / input_frames) if input_frames else 0.0
     return {
@@ -119,6 +120,7 @@ def summarize_run(rows, config):
         "qa_pass": int(all(qa_passes)),
         "qa_pass_count": sum(int(item) for item in qa_passes),
         "qa_total": len(qa_passes),
+        "latest_recent_queries": latest_recent_queries,
         "input_frames": input_frames,
         "kept_frames": kept_frames,
         "skipped_frames": skipped_frames,
@@ -147,6 +149,8 @@ def aggregate_rows(rows):
             row["enable_vit_layer_sparse"],
             row["semantic_recency_keep_frames"],
             row["semantic_recency_updates_anchor"],
+            row["enable_query_aware_retrieval"],
+            row["latest_retrieval_blocks"],
         )
         grouped.setdefault(key, []).append(row)
 
@@ -166,10 +170,13 @@ def aggregate_rows(rows):
                 "enable_vit_layer_sparse": key[5],
                 "semantic_recency_keep_frames": key[6],
                 "semantic_recency_updates_anchor": key[7],
+                "enable_query_aware_retrieval": key[8],
+                "latest_retrieval_blocks": key[9],
                 "repeats": len(group),
                 "qa_pass_rate": sum(qa_values) / len(qa_values),
                 "qa_pass_count_mean": statistics.mean(int(row["qa_pass_count"]) for row in group),
                 "qa_total": first["qa_total"],
+                "latest_recent_queries_mean": statistics.mean(float(row["latest_recent_queries"]) for row in group),
                 "input_frames": first["input_frames"],
                 "kept_frames_mean": statistics.mean(float(row["kept_frames"]) for row in group),
                 "recency_kept_frames_mean": statistics.mean(float(row["recency_kept_frames"]) for row in group),
@@ -189,7 +196,9 @@ def run_one(args, output_dir: Path, refresh_interval: int, threshold: float, com
         f"{args.model}_fps{args.sample_fps:g}_r{refresh_interval}_t{threshold:g}_"
         f"compute{int(compute_gate)}_layer{int(args.enable_vit_layer_sparse)}_"
         f"recent{args.semantic_recency_keep_frames}_"
-        f"anchor{int(args.semantic_recency_updates_anchor)}_rep{repeat_idx}"
+        f"anchor{int(args.semantic_recency_updates_anchor)}_"
+        f"qa{int(args.enable_query_aware_retrieval)}_"
+        f"qrb{args.latest_retrieval_blocks}_rep{repeat_idx}"
     ).replace(".", "p")
     save_dir = output_dir / "runs" / tag
     cmd = [
@@ -230,6 +239,12 @@ def run_one(args, output_dir: Path, refresh_interval: int, threshold: float, com
         str(args.semantic_recency_keep_frames),
         "--semantic_recency_updates_anchor",
         str(args.semantic_recency_updates_anchor).lower(),
+        "--enable_query_aware_retrieval",
+        str(args.enable_query_aware_retrieval).lower(),
+        "--latest_retrieval_blocks",
+        str(args.latest_retrieval_blocks),
+        "--latest_query_terms",
+        args.latest_query_terms,
         "--debug",
         str(args.debug).lower(),
     ]
@@ -246,6 +261,8 @@ def run_one(args, output_dir: Path, refresh_interval: int, threshold: float, com
             "enable_vit_layer_sparse": int(args.enable_vit_layer_sparse),
             "semantic_recency_keep_frames": args.semantic_recency_keep_frames,
             "semantic_recency_updates_anchor": int(args.semantic_recency_updates_anchor),
+            "enable_query_aware_retrieval": int(args.enable_query_aware_retrieval),
+            "latest_retrieval_blocks": args.latest_retrieval_blocks,
             "repeat_idx": repeat_idx,
             "save_dir": str(save_dir),
         },
@@ -269,6 +286,12 @@ def parse_args():
     parser.add_argument("--compute-gates", default="true,false")
     parser.add_argument("--semantic-recency-keep-frames", type=int, default=0)
     parser.add_argument("--semantic-recency-updates-anchor", type=str2bool, default=False)
+    parser.add_argument("--enable-query-aware-retrieval", type=str2bool, default=False)
+    parser.add_argument("--latest-retrieval-blocks", type=int, default=0)
+    parser.add_argument(
+        "--latest-query-terms",
+        default="latest,current,currently,now,setting,where,last frame,latest clip,latest video frame",
+    )
     parser.add_argument("--repeats", type=int, default=1)
     parser.add_argument("--debug", type=str2bool, default=True)
     return parser.parse_args()
