@@ -23,6 +23,7 @@ def vit_patch_hf(model, **kwargs):
     if kwargs.get("enable_semantic_stream", False):
         model.semantic_stream_compute_gate = kwargs.get("enable_semantic_compute_gate", False)
         model.semantic_selection_feature_source = kwargs.get("semantic_selection_feature_source", "vit_embedding")
+        model.semantic_candidate_multiplier = kwargs.get("semantic_candidate_multiplier", 4)
         model.semantic_stream_gate = SemanticStreamGate(
             refresh_interval=kwargs.get("semantic_refresh_interval", cache_interval),
             skip_patch_threshold=kwargs.get("semantic_skip_threshold", 0.01),
@@ -163,7 +164,9 @@ def _encode_video_chunk_with_semantic_compute_gate(self, video_chunk):
 def _encode_video_window_with_semantic_compute_gate(self, video):
     if video.shape[0] == 0:
         return
-    selected_by_raw = getattr(self, "semantic_selection_feature_source", "vit_embedding") == "raw_rgb"
+    feature_source = getattr(self, "semantic_selection_feature_source", "vit_embedding")
+    selected_by_raw = feature_source == "raw_rgb"
+    selected_by_hybrid = feature_source == "hybrid"
     if selected_by_raw:
         raw_signatures = _raw_rgb_signatures(video)
         keep_indices = self.semantic_stream_gate.select_indices_from_signatures(
@@ -173,6 +176,16 @@ def _encode_video_window_with_semantic_compute_gate(self, video):
         if keep_indices.numel() == 0:
             return
         video = video.index_select(0, keep_indices.to(video.device if video.is_cuda else "cpu"))
+    elif selected_by_hybrid:
+        raw_signatures = _raw_rgb_signatures(video)
+        candidate_indices = _raw_rgb_candidate_indices(
+            raw_signatures,
+            self.semantic_stream_gate,
+            int(getattr(self, "semantic_candidate_multiplier", 4)),
+        )
+        if candidate_indices.numel() == 0:
+            return
+        video = video.index_select(0, candidate_indices.to(video.device if video.is_cuda else "cpu"))
 
     pixel_values_videos = self.processor.video_processor(
         video,
@@ -187,6 +200,17 @@ def _encode_video_window_with_semantic_compute_gate(self, video):
     embeddings = self.vision_tower.vision_model.embeddings(flat_pixels)
     if selected_by_raw:
         kept_embeddings = embeddings
+    elif selected_by_hybrid:
+        signatures = self.semantic_stream_gate._frame_signature(embeddings)
+        keep_indices = self.semantic_stream_gate.select_indices_from_candidate_signatures(
+            signatures,
+            candidate_indices.to(signatures.device),
+            total_frames=int(raw_signatures.shape[0]),
+            token_count=self.n_frame_tokens,
+        )
+        if keep_indices.numel() == 0:
+            return
+        kept_embeddings = embeddings.index_select(0, keep_indices)
     else:
         signatures = self.semantic_stream_gate._frame_signature(embeddings)
         keep_indices = self.semantic_stream_gate.select_indices_from_signatures(
@@ -226,6 +250,53 @@ def _raw_rgb_signatures(video, grid_size=4):
     pooled = torch.nn.functional.adaptive_avg_pool2d(frames, (grid_size, grid_size))
     signatures = pooled.flatten(1)
     return torch.nn.functional.normalize(signatures, dim=-1)
+
+
+def _raw_rgb_candidate_indices(raw_signatures, semantic_gate, candidate_multiplier):
+    candidate_multiplier = max(1, candidate_multiplier)
+    total_frames = int(raw_signatures.shape[0])
+    if total_frames == 0:
+        return torch.empty(0, device=raw_signatures.device, dtype=torch.long)
+
+    base_frame_idx = int(semantic_gate.frame_idx)
+    budget_window_size = max(1, int(semantic_gate.budget_window_size))
+    budget_keep_per_window = max(1, int(semantic_gate.budget_keep_per_window))
+    candidate_budget = candidate_multiplier * budget_keep_per_window
+    forced = set()
+    if semantic_gate.anchor_feature is None:
+        forced.add(0)
+    for local_idx in range(total_frames):
+        global_idx = base_frame_idx + local_idx
+        if global_idx % int(semantic_gate.refresh_interval) == 0:
+            forced.add(local_idx)
+        if semantic_gate.coverage_interval > 0 and global_idx % int(semantic_gate.coverage_interval) == 0:
+            forced.add(local_idx)
+        if semantic_gate._in_recency_window(global_idx):
+            forced.add(local_idx)
+
+    prev = raw_signatures[:-1]
+    curr = raw_signatures[1:]
+    if curr.shape[0] == 0:
+        deltas = [0.0]
+    else:
+        similarities = torch.nn.functional.cosine_similarity(curr, prev, dim=-1)
+        deltas = [0.0] + [max(0.0, float(1.0 - value.item())) for value in similarities]
+
+    candidates_by_window = {}
+    for local_idx, drift in enumerate(deltas):
+        if local_idx in forced:
+            continue
+        global_idx = base_frame_idx + local_idx
+        window_id = global_idx // budget_window_size
+        candidates_by_window.setdefault(window_id, []).append((drift, local_idx))
+
+    selected = set(forced)
+    for candidates in candidates_by_window.values():
+        candidates.sort(reverse=True)
+        for _, local_idx in candidates[:candidate_budget]:
+            selected.add(local_idx)
+
+    return torch.tensor(sorted(selected), device=raw_signatures.device, dtype=torch.long)
 
 
 @torch.inference_mode()

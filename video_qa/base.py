@@ -215,9 +215,10 @@ def work(QA_CLASS):
     )
     parser.add_argument(
         "--semantic_selection_feature_source",
-        choices=["vit_embedding", "raw_rgb"],
+        choices=["vit_embedding", "raw_rgb", "hybrid"],
         default="vit_embedding",
     )
+    parser.add_argument("--semantic_candidate_multiplier", type=int, default=4)
     parser.add_argument("--semantic_budget_window_size", type=int, default=0)
     parser.add_argument("--semantic_budget_keep_per_window", type=int, default=1)
     parser.add_argument("--enable_query_aware_retrieval", type=str2bool, nargs='?', const=True, default=False)
@@ -273,6 +274,7 @@ def work(QA_CLASS):
                     "semantic_coverage_updates_anchor": args.semantic_coverage_updates_anchor,
                     "semantic_selection_policy": args.semantic_selection_policy,
                     "semantic_selection_feature_source": args.semantic_selection_feature_source,
+                    "semantic_candidate_multiplier": args.semantic_candidate_multiplier,
                     "semantic_budget_window_size": args.semantic_budget_window_size,
                     "semantic_budget_keep_per_window": args.semantic_budget_keep_per_window,
                 },

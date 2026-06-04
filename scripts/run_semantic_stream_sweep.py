@@ -161,6 +161,7 @@ def aggregate_rows(rows):
             row["semantic_coverage_updates_anchor"],
             row["semantic_selection_policy"],
             row["semantic_selection_feature_source"],
+            row["semantic_candidate_multiplier"],
             row["semantic_budget_window_size"],
             row["semantic_budget_keep_per_window"],
             row["enable_query_aware_retrieval"],
@@ -189,11 +190,12 @@ def aggregate_rows(rows):
                 "semantic_coverage_updates_anchor": key[9],
                 "semantic_selection_policy": key[10],
                 "semantic_selection_feature_source": key[11],
-                "semantic_budget_window_size": key[12],
-                "semantic_budget_keep_per_window": key[13],
-                "enable_query_aware_retrieval": key[14],
-                "query_retrieval_policy": key[15],
-                "latest_retrieval_blocks": key[16],
+                "semantic_candidate_multiplier": key[12],
+                "semantic_budget_window_size": key[13],
+                "semantic_budget_keep_per_window": key[14],
+                "enable_query_aware_retrieval": key[15],
+                "query_retrieval_policy": key[16],
+                "latest_retrieval_blocks": key[17],
                 "repeats": len(group),
                 "qa_pass_rate": sum(qa_values) / len(qa_values),
                 "qa_pass_count_mean": statistics.mean(int(row["qa_pass_count"]) for row in group),
@@ -227,6 +229,7 @@ def run_one(args, output_dir: Path, refresh_interval: int, threshold: float, com
         f"covanchor{int(args.semantic_coverage_updates_anchor)}_"
         f"sel{args.semantic_selection_policy}_"
         f"src{args.semantic_selection_feature_source}_"
+        f"cm{args.semantic_candidate_multiplier}_"
         f"bw{args.semantic_budget_window_size}_"
         f"bk{args.semantic_budget_keep_per_window}_"
         f"qa{int(args.enable_query_aware_retrieval)}_"
@@ -280,6 +283,8 @@ def run_one(args, output_dir: Path, refresh_interval: int, threshold: float, com
         args.semantic_selection_policy,
         "--semantic_selection_feature_source",
         args.semantic_selection_feature_source,
+        "--semantic_candidate_multiplier",
+        str(args.semantic_candidate_multiplier),
         "--semantic_budget_window_size",
         str(args.semantic_budget_window_size),
         "--semantic_budget_keep_per_window",
@@ -312,6 +317,7 @@ def run_one(args, output_dir: Path, refresh_interval: int, threshold: float, com
             "semantic_coverage_updates_anchor": int(args.semantic_coverage_updates_anchor),
             "semantic_selection_policy": args.semantic_selection_policy,
             "semantic_selection_feature_source": args.semantic_selection_feature_source,
+            "semantic_candidate_multiplier": args.semantic_candidate_multiplier,
             "semantic_budget_window_size": args.semantic_budget_window_size,
             "semantic_budget_keep_per_window": args.semantic_budget_keep_per_window,
             "enable_query_aware_retrieval": int(args.enable_query_aware_retrieval),
@@ -349,9 +355,10 @@ def parse_args():
     )
     parser.add_argument(
         "--semantic-selection-feature-source",
-        choices=["vit_embedding", "raw_rgb"],
+        choices=["vit_embedding", "raw_rgb", "hybrid"],
         default="vit_embedding",
     )
+    parser.add_argument("--semantic-candidate-multiplier", type=int, default=4)
     parser.add_argument("--semantic-budget-window-size", type=int, default=0)
     parser.add_argument("--semantic-budget-keep-per-window", type=int, default=1)
     parser.add_argument("--enable-query-aware-retrieval", type=str2bool, default=False)
