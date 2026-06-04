@@ -17,6 +17,8 @@ TARGETS = {
         "description": "StreamingBench（流式视频理解基准）",
         "repo": "mjuicem/StreamingBench",
         "local_paths": [
+            "streamingbench",
+            "StreamingBench",
             "data/streamingbench",
             "data/StreamingBench",
         ],
@@ -25,6 +27,8 @@ TARGETS = {
         "description": "OVO-Bench（在线视频理解基准）",
         "repo": "JoeLeelyf/OVO-Bench",
         "local_paths": [
+            "ovo_bench",
+            "OVO-Bench",
             "data/ovo_bench",
             "data/OVO-Bench",
         ],

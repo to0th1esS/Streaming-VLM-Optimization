@@ -347,3 +347,197 @@ W/T/L：2 / 20 / 2
 
 不能满足这些问题的改动，默认只作为 ablation（消融）或负结果记录，不进入最终方法主线。
 
+## 9. 2026-06-04 深夜：候选倍数扫描与新数据集资产
+
+### 9.1 实验目的
+
+本轮目标是触碰当前 `hybrid selector（混合选择器）` 的边界，而不是只验证一个好看的单点。
+
+需要回答：
+
+1. `candidate_multiplier（候选倍数）` 太小时是否漏掉关键语义？
+2. `candidate_multiplier（候选倍数）` 太大时是否引入更多噪声和选择开销？
+3. 当前 RVS-Movie / RVS-Ego 是否过于简单，导致方法边界没有暴露？
+4. 能否尽快准备更强流式基准数据，如 `StreamingBench（流式视频理解基准）` 和 `OVO-Bench（在线视频理解基准）`？
+
+### 9.2 方法改动范围
+
+本轮没有改核心模型方法，只新增/修正数据工具：
+
+- `scripts/check_streaming_benchmark_targets.py`
+  - 修正远程 `/home/mllm/datasets/streamingbench` 和 `/home/mllm/datasets/ovo_bench` 的检测路径；
+- `scripts/download_streaming_benchmarks.sh`
+  - 固化 StreamingBench / OVO-Bench 的下载命令；
+  - 默认使用 `HF_ENDPOINT=https://hf-mirror.com`，因为服务器直连 `huggingface.co` 超时。
+
+核心方法文件未变：
+
+- `model/vit_patch.py`
+- `model/vision_accelerator/semantic_stream.py`
+
+### 9.3 RVS-Movie：candidate_multiplier 扫描
+
+设置：
+
+```text
+dataset（数据集）= RVS-Movie
+fps（帧率）= 1.0
+semantic_selection_feature_source（语义选择特征源）= hybrid
+budget_window_size（预算窗口）= 96
+budget_keep_per_window（每窗口保留数）= 1
+recency_keep_frames（最近帧保留）= 4
+query_retrieval_policy（查询检索策略）= always_recent
+latest_retrieval_blocks（最近检索块数）= 4
+```
+
+结果：
+
+| 方法 | kept / input（保留/输入帧） | encode time（编码时间） | speedup vs dense（相对密集加速） | speedup vs periodic（相对周期加速） | token-F1（词重叠 F1） | W/T/L vs dense（胜/平/负） | W/T/L vs periodic（胜/平/负） |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| `hybrid cm2（混合，候选倍数 2）` | 85 / 4067 | 7.140s | 52.32x | 3.86x | 0.0586 | 2 / 19 / 3 | 2 / 21 / 1 |
+| `hybrid cm4（混合，候选倍数 4）` | 85 / 4067 | 9.597s | 38.92x | 2.87x | 0.0503 | 1 / 19 / 4 | 2 / 20 / 2 |
+| `hybrid cm8（混合，候选倍数 8）` | 85 / 4067 | 9.248s | 40.39x | 2.98x | 0.0396 | 0 / 21 / 3 | 2 / 20 / 2 |
+
+现象：
+
+1. `cm2（候选倍数 2）` 在 RVS-Movie 上反而最好；
+2. `cm8（候选倍数 8）` 没有带来更好 QA proxy（问答代理指标），反而 token-F1 更低；
+3. 这说明 RVS-Movie 的 24 QA 自动指标可能不足以稳定暴露“候选召回不足”的边界；
+4. 也说明当前方法不能只在 Movie 上判断，需要更复杂数据集和 LLM judge（大模型裁判）。
+
+阶段判断：
+
+```text
+cm2 是当前速度-质量最优默认候选，但不能据此认定候选越少越好。
+```
+
+### 9.4 RVS-Ego：第一视角复验
+
+设置：
+
+```text
+dataset（数据集）= RVS-Ego
+fps（帧率）= 0.5
+semantic_selection_feature_source（语义选择特征源）= hybrid
+candidate_multiplier（候选倍数）= 2
+budget_window_size（预算窗口）= 96
+budget_keep_per_window（每窗口保留数）= 1
+```
+
+结果：
+
+| 方法 | kept / input（保留/输入帧） | token reduction（令牌减少） | encode time（编码时间） | speedup vs dense（相对密集加速） | token-F1（词重叠 F1） | W/T/L vs dense（胜/平/负） |
+|---|---:|---:|---:|---:|---:|---:|
+| `dense（密集）` | 5115 / 5115 | 0.00% | 475.824s | 1.00x | 0.2723 | 0 / 24 / 0 |
+| `periodic（周期采样）` | 194 / 5115 | 96.21% | 122.057s | 3.90x | 0.2740 | 1 / 23 / 0 |
+| `hybrid cm2（混合，候选倍数 2）` | 96 / 5115 | 98.12% | 35.302s | 13.48x | 0.2767 | 1 / 22 / 1 |
+
+与周期采样对比：
+
+```text
+保留帧：194 -> 96
+编码时间：122.057s -> 35.302s
+相对周期采样加速：3.46x
+token-F1：0.2740 -> 0.2767
+W/T/L：2 / 21 / 1
+```
+
+现象：
+
+1. hybrid 在第一视角数据上也明显减少保留帧；
+2. 相对 periodic（周期采样）同时拿到更少写入、更快编码和略高 token-F1；
+3. 但 `QA=18/24` 和 token-F1 仍是弱指标，需要 LLM judge（大模型裁判）验证。
+
+阶段判断：
+
+```text
+hybrid cm2 不只是 Movie 特例，已在 Ego 上复现效率优势。
+```
+
+### 9.5 StreamingBench 资产状态
+
+下载位置：
+
+```text
+/home/mllm/datasets/streamingbench
+```
+
+已完成：
+
+- `README.md`
+- `StreamingBench/*.csv`
+
+CSV 规模：
+
+```text
+Real_Time_Visual_Understanding.csv: 2500 lines
+Omni_Source_Understanding.csv: 1000 lines
+Contextual_Understanding.csv: 500 lines
+Sequential_Question_Answering.csv: 250 lines
+Proactive_Output.csv: 250 lines
+Proactive_Output_50.csv: 50 lines
+```
+
+媒体包状态：
+
+- 尝试下载 `Real-Time Visual Understanding_1-50.zip` 和 `Sequential Question Answering_1-25.zip`；
+- 直连 `huggingface.co` 超时；
+- 使用 `hf-mirror.com` 后仍在大文件下载阶段超时；
+- 已终止卡住进程，未得到完整 zip。
+
+阶段判断：
+
+```text
+StreamingBench 标注已可用于分析数据结构和设计 adapter（适配器），但视频媒体仍需分批下载或人工辅助下载。
+```
+
+### 9.6 OVO-Bench 资产状态
+
+下载位置：
+
+```text
+/home/mllm/datasets/ovo_bench
+```
+
+状态：
+
+- 使用 `HF_ENDPOINT=https://hf-mirror.com` 下载；
+- 下载进程已结束；
+- 当前目录大小约 `179GB`；
+- 已有 `README.md`、`.gitattributes`、`chunked_videos.tar.part*` 和 `src_videos.tar.part*` 分片。
+
+已观察到的文件：
+
+```text
+chunked_videos.tar.partaa ... partag
+chunked_videos.tar.partai ... partao
+src_videos.tar.partaa ... partae
+```
+
+注意：
+
+- 顶层列表中暂未看到 `chunked_videos.tar.partah`；
+- 需要下一步用 Hugging Face manifest（文件清单）或重新运行下载命令做完整性校验；
+- 暂不解压，避免在 `/home` 已使用 97% 的情况下产生额外空间压力。
+
+OVO-Bench 任务特性：
+
+- `Backward Tracing（向后追溯）`
+- `Real-Time Visual Perception（实时视觉感知）`
+- `Forward Active Responding（前向主动响应）`
+
+这些任务比 RVS 更适合检验：
+
+```text
+稀疏语义流是否会漏掉关键事件；
+固定预算选择是否能处理延迟回答和未来信息；
+query-independent（查询无关）的前端选择是否足够泛化。
+```
+
+### 9.7 下一步
+
+1. 对 `hybrid cm2（混合，候选倍数 2）` 跑 Qwen2.5-VL judge（模型裁判），优先比较 RVS-Ego 和 RVS-Movie 的 hybrid vs periodic；
+2. 对 OVO-Bench 做完整性校验，不急于解压；
+3. 解析 StreamingBench CSV，写 adapter（适配器）前先确认 video id、timestamp（时间戳）、question type（问题类型）字段；
+4. 选择 StreamingBench 的 `Real-Time Visual Understanding（实时视觉理解）` 和 `Sequential Question Answering（顺序问答）` 作为首批边界任务；
+5. 后续方法层面重点检查 `raw_rgb prefilter（原始 RGB 预筛）` 是否漏掉细粒度动作、字幕、局部物体变化。
