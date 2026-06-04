@@ -163,7 +163,8 @@ def _encode_video_chunk_with_semantic_compute_gate(self, video_chunk):
 def _encode_video_window_with_semantic_compute_gate(self, video):
     if video.shape[0] == 0:
         return
-    if getattr(self, "semantic_selection_feature_source", "vit_embedding") == "raw_rgb":
+    selected_by_raw = getattr(self, "semantic_selection_feature_source", "vit_embedding") == "raw_rgb"
+    if selected_by_raw:
         raw_signatures = _raw_rgb_signatures(video)
         keep_indices = self.semantic_stream_gate.select_indices_from_signatures(
             raw_signatures,
@@ -184,15 +185,17 @@ def _encode_video_window_with_semantic_compute_gate(self, video):
 
     flat_pixels = pixel_values_videos.view(batch_size * frames, channels, height, width)
     embeddings = self.vision_tower.vision_model.embeddings(flat_pixels)
-    signatures = self.semantic_stream_gate._frame_signature(embeddings)
-    keep_indices = self.semantic_stream_gate.select_indices_from_signatures(
-        signatures,
-        token_count=self.n_frame_tokens,
-    )
-    if keep_indices.numel() == 0:
-        return
-
-    kept_embeddings = embeddings.index_select(0, keep_indices)
+    if selected_by_raw:
+        kept_embeddings = embeddings
+    else:
+        signatures = self.semantic_stream_gate._frame_signature(embeddings)
+        keep_indices = self.semantic_stream_gate.select_indices_from_signatures(
+            signatures,
+            token_count=self.n_frame_tokens,
+        )
+        if keep_indices.numel() == 0:
+            return
+        kept_embeddings = embeddings.index_select(0, keep_indices)
     video_features = _get_video_features_from_embeddings(
         self,
         kept_embeddings,
