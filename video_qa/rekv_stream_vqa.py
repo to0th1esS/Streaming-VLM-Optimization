@@ -197,6 +197,7 @@ class ReKVStreamVQA(BaseVQA):
                 'semantic_skipped_frames': semantic_stats.get("skipped_frames", 0),
                 'semantic_recency_kept_frames': semantic_stats.get("recency_kept_frames", 0),
                 'semantic_coverage_kept_frames': semantic_stats.get("coverage_kept_frames", 0),
+                'semantic_budget_kept_frames': semantic_stats.get("budget_kept_frames", 0),
                 'semantic_input_tokens': semantic_stats.get("input_tokens", 0),
                 'semantic_written_tokens': semantic_stats.get("written_tokens", 0),
             })

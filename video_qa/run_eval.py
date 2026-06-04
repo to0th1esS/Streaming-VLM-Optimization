@@ -30,6 +30,9 @@ def append_semantic_stream_args(cmd, args):
         "--semantic_recency_updates_anchor", str(args.semantic_recency_updates_anchor),
         "--semantic_coverage_interval", str(args.semantic_coverage_interval),
         "--semantic_coverage_updates_anchor", str(args.semantic_coverage_updates_anchor),
+        "--semantic_selection_policy", str(args.semantic_selection_policy),
+        "--semantic_budget_window_size", str(args.semantic_budget_window_size),
+        "--semantic_budget_keep_per_window", str(args.semantic_budget_keep_per_window),
         "--enable_query_aware_retrieval", str(args.enable_query_aware_retrieval),
         "--query_retrieval_policy", str(args.query_retrieval_policy),
         "--latest_retrieval_blocks", str(args.latest_retrieval_blocks),
@@ -298,6 +301,9 @@ if __name__ == "__main__":
     parser.add_argument("--semantic_recency_updates_anchor", type=str, default='false')
     parser.add_argument("--semantic_coverage_interval", type=int, default=0)
     parser.add_argument("--semantic_coverage_updates_anchor", type=str, default='false')
+    parser.add_argument("--semantic_selection_policy", type=str, default='threshold', choices=['threshold', 'budget_topk'])
+    parser.add_argument("--semantic_budget_window_size", type=int, default=0)
+    parser.add_argument("--semantic_budget_keep_per_window", type=int, default=1)
     parser.add_argument("--enable_query_aware_retrieval", type=str, default='false')
     parser.add_argument(
         "--query_retrieval_policy",

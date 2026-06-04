@@ -29,6 +29,9 @@ def vit_patch_hf(model, **kwargs):
             recency_updates_anchor=kwargs.get("semantic_recency_updates_anchor", False),
             coverage_interval=kwargs.get("semantic_coverage_interval", 0),
             coverage_updates_anchor=kwargs.get("semantic_coverage_updates_anchor", False),
+            selection_policy=kwargs.get("semantic_selection_policy", "threshold"),
+            budget_window_size=kwargs.get("semantic_budget_window_size", 0),
+            budget_keep_per_window=kwargs.get("semantic_budget_keep_per_window", 1),
         )
         if not model.semantic_stream_compute_gate:
             model.vit_output_postprocess = model.semantic_stream_gate
@@ -156,10 +159,61 @@ def _encode_video_chunk_with_semantic_compute_gate(self, video_chunk):
     self.kv_cache = output.past_key_values
 
 
+def _encode_video_window_with_semantic_compute_gate(self, video):
+    if video.shape[0] == 0:
+        return
+    pixel_values_videos = self.processor.video_processor(
+        video,
+        return_tensors="pt",
+    ).pixel_values_videos.to(self.device, self.dtype)
+
+    batch_size, frames, channels, height, width = pixel_values_videos.shape
+    if batch_size != 1:
+        return self._encode_video_chunk(video)
+
+    flat_pixels = pixel_values_videos.view(batch_size * frames, channels, height, width)
+    embeddings = self.vision_tower.vision_model.embeddings(flat_pixels)
+    signatures = self.semantic_stream_gate._frame_signature(embeddings)
+    keep_indices = self.semantic_stream_gate.select_indices_from_signatures(
+        signatures,
+        token_count=self.n_frame_tokens,
+    )
+    if keep_indices.numel() == 0:
+        return
+
+    kept_embeddings = embeddings.index_select(0, keep_indices)
+    video_features = _get_video_features_from_embeddings(
+        self,
+        kept_embeddings,
+        batch_size=batch_size,
+        frames=int(keep_indices.numel()),
+    )
+    if video_features.shape[1] == 0:
+        return
+    assert self.n_local >= video_features.shape[1], (
+        f"n_local: {self.n_local}, video_features: {video_features.shape[1]}"
+    )
+    output = self.language_model(
+        inputs_embeds=video_features,
+        past_key_values=self.kv_cache,
+        use_cache=True,
+        return_dict=True,
+    )
+    self.kv_cache = output.past_key_values
+
+
 @torch.inference_mode()
 def _new_encode_video(self, video, encode_chunk_size=None):
     encode_chunk_size = encode_chunk_size or self.vit_sparse_encode_chunk_size
     num_frames = video.shape[0]
+    semantic_gate = getattr(self, "semantic_stream_gate", None)
+    if (
+        getattr(self, "semantic_stream_compute_gate", False)
+        and getattr(semantic_gate, "selection_policy", "threshold") == "budget_topk"
+    ):
+        _encode_video_window_with_semantic_compute_gate(self, video)
+        return
+
     num_chunks = num_frames // encode_chunk_size
 
     for chunk_idx in range(num_chunks):

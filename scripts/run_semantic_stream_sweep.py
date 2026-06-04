@@ -112,6 +112,7 @@ def summarize_run(rows, config):
     skipped_frames = int(float(final.get("semantic_skipped_frames", 0)))
     recency_kept_frames = int(float(final.get("semantic_recency_kept_frames", 0)))
     coverage_kept_frames = int(float(final.get("semantic_coverage_kept_frames", 0)))
+    budget_kept_frames = int(float(final.get("semantic_budget_kept_frames", 0)))
     qa_passes = [rule_based_answer_pass(row) for row in rows]
     latest_recent_queries = sum(row.get("query_route", "") == "latest_recent" for row in rows)
     always_recent_queries = sum(row.get("query_route", "") == "always_recent" for row in rows)
@@ -131,6 +132,7 @@ def summarize_run(rows, config):
         "skipped_frames": skipped_frames,
         "recency_kept_frames": recency_kept_frames,
         "coverage_kept_frames": coverage_kept_frames,
+        "budget_kept_frames": budget_kept_frames,
         "kept_frame_ratio": kept_frames / input_frames if input_frames else 0.0,
         "frame_reduction": frame_reduction,
         "input_tokens": input_tokens,
@@ -157,6 +159,9 @@ def aggregate_rows(rows):
             row["semantic_recency_updates_anchor"],
             row["semantic_coverage_interval"],
             row["semantic_coverage_updates_anchor"],
+            row["semantic_selection_policy"],
+            row["semantic_budget_window_size"],
+            row["semantic_budget_keep_per_window"],
             row["enable_query_aware_retrieval"],
             row["query_retrieval_policy"],
             row["latest_retrieval_blocks"],
@@ -181,9 +186,12 @@ def aggregate_rows(rows):
                 "semantic_recency_updates_anchor": key[7],
                 "semantic_coverage_interval": key[8],
                 "semantic_coverage_updates_anchor": key[9],
-                "enable_query_aware_retrieval": key[10],
-                "query_retrieval_policy": key[11],
-                "latest_retrieval_blocks": key[12],
+                "semantic_selection_policy": key[10],
+                "semantic_budget_window_size": key[11],
+                "semantic_budget_keep_per_window": key[12],
+                "enable_query_aware_retrieval": key[13],
+                "query_retrieval_policy": key[14],
+                "latest_retrieval_blocks": key[15],
                 "repeats": len(group),
                 "qa_pass_rate": sum(qa_values) / len(qa_values),
                 "qa_pass_count_mean": statistics.mean(int(row["qa_pass_count"]) for row in group),
@@ -195,6 +203,7 @@ def aggregate_rows(rows):
                 "kept_frames_mean": statistics.mean(float(row["kept_frames"]) for row in group),
                 "recency_kept_frames_mean": statistics.mean(float(row["recency_kept_frames"]) for row in group),
                 "coverage_kept_frames_mean": statistics.mean(float(row["coverage_kept_frames"]) for row in group),
+                "budget_kept_frames_mean": statistics.mean(float(row["budget_kept_frames"]) for row in group),
                 "token_reduction_mean": statistics.mean(float(row["token_reduction"]) for row in group),
                 "encode_mean_sec": statistics.mean(encode_values),
                 "encode_median_sec": statistics.median(encode_values),
@@ -214,6 +223,9 @@ def run_one(args, output_dir: Path, refresh_interval: int, threshold: float, com
         f"anchor{int(args.semantic_recency_updates_anchor)}_"
         f"cov{args.semantic_coverage_interval}_"
         f"covanchor{int(args.semantic_coverage_updates_anchor)}_"
+        f"sel{args.semantic_selection_policy}_"
+        f"bw{args.semantic_budget_window_size}_"
+        f"bk{args.semantic_budget_keep_per_window}_"
         f"qa{int(args.enable_query_aware_retrieval)}_"
         f"policy{args.query_retrieval_policy}_"
         f"qrb{args.latest_retrieval_blocks}_rep{repeat_idx}"
@@ -261,6 +273,12 @@ def run_one(args, output_dir: Path, refresh_interval: int, threshold: float, com
         str(args.semantic_coverage_interval),
         "--semantic_coverage_updates_anchor",
         str(args.semantic_coverage_updates_anchor).lower(),
+        "--semantic_selection_policy",
+        args.semantic_selection_policy,
+        "--semantic_budget_window_size",
+        str(args.semantic_budget_window_size),
+        "--semantic_budget_keep_per_window",
+        str(args.semantic_budget_keep_per_window),
         "--enable_query_aware_retrieval",
         str(args.enable_query_aware_retrieval).lower(),
         "--query_retrieval_policy",
@@ -287,6 +305,9 @@ def run_one(args, output_dir: Path, refresh_interval: int, threshold: float, com
             "semantic_recency_updates_anchor": int(args.semantic_recency_updates_anchor),
             "semantic_coverage_interval": args.semantic_coverage_interval,
             "semantic_coverage_updates_anchor": int(args.semantic_coverage_updates_anchor),
+            "semantic_selection_policy": args.semantic_selection_policy,
+            "semantic_budget_window_size": args.semantic_budget_window_size,
+            "semantic_budget_keep_per_window": args.semantic_budget_keep_per_window,
             "enable_query_aware_retrieval": int(args.enable_query_aware_retrieval),
             "query_retrieval_policy": args.query_retrieval_policy,
             "latest_retrieval_blocks": args.latest_retrieval_blocks,
@@ -315,6 +336,13 @@ def parse_args():
     parser.add_argument("--semantic-recency-updates-anchor", type=str2bool, default=False)
     parser.add_argument("--semantic-coverage-interval", type=int, default=0)
     parser.add_argument("--semantic-coverage-updates-anchor", type=str2bool, default=False)
+    parser.add_argument(
+        "--semantic-selection-policy",
+        choices=["threshold", "budget_topk"],
+        default="threshold",
+    )
+    parser.add_argument("--semantic-budget-window-size", type=int, default=0)
+    parser.add_argument("--semantic-budget-keep-per-window", type=int, default=1)
     parser.add_argument("--enable-query-aware-retrieval", type=str2bool, default=False)
     parser.add_argument(
         "--query-retrieval-policy",
@@ -355,6 +383,7 @@ def main():
                         f"qa={row['qa_pass_count']}/{row['qa_total']} "
                         f"token_reduction={row['token_reduction'] * 100:.1f}% "
                         f"coverage={row['coverage_kept_frames']} "
+                        f"budget={row['budget_kept_frames']} "
                         f"encode={row['cumulative_encode_video_sec']:.3f}s"
                     )
 

@@ -11,6 +11,9 @@ class SemanticStreamGate:
         recency_updates_anchor: bool = False,
         coverage_interval: int = 0,
         coverage_updates_anchor: bool = False,
+        selection_policy: str = "threshold",
+        budget_window_size: int = 0,
+        budget_keep_per_window: int = 1,
     ):
         if refresh_interval < 1:
             raise ValueError("refresh_interval must be >= 1")
@@ -20,12 +23,21 @@ class SemanticStreamGate:
             raise ValueError("recency_keep_frames must be >= 0")
         if coverage_interval < 0:
             raise ValueError("coverage_interval must be >= 0")
+        if selection_policy not in {"threshold", "budget_topk"}:
+            raise ValueError("selection_policy must be 'threshold' or 'budget_topk'")
+        if budget_window_size < 0:
+            raise ValueError("budget_window_size must be >= 0")
+        if budget_keep_per_window < 1:
+            raise ValueError("budget_keep_per_window must be >= 1")
         self.refresh_interval = refresh_interval
         self.skip_patch_threshold = skip_patch_threshold
         self.recency_keep_frames = recency_keep_frames
         self.recency_updates_anchor = recency_updates_anchor
         self.coverage_interval = coverage_interval
         self.coverage_updates_anchor = coverage_updates_anchor
+        self.selection_policy = selection_policy
+        self.budget_window_size = budget_window_size
+        self.budget_keep_per_window = budget_keep_per_window
         self.anchor_feature = None
         self.frame_idx = 0
         self._recency_start_idx = None
@@ -38,6 +50,7 @@ class SemanticStreamGate:
             "written_tokens": 0,
             "recency_kept_frames": 0,
             "coverage_kept_frames": 0,
+            "budget_kept_frames": 0,
         }
         self.recent_decisions = []
 
@@ -84,33 +97,100 @@ class SemanticStreamGate:
             return False, drift, "skip", False
         return True, drift, "drift_keep", True
 
+    def _in_recency_window(self, frame_idx: int):
+        return (
+            self._recency_start_idx is not None
+            and self._recency_start_idx <= frame_idx < self._recency_end_idx
+        )
+
+    def _record_decision(self, local_idx, keep, drift, decision, update_anchor, signatures, token_count):
+        self.stats["input_frames"] += 1
+        self.stats["input_tokens"] += token_count
+        if keep:
+            if update_anchor:
+                self.anchor_feature = signatures[local_idx : local_idx + 1].detach()
+            self.stats["kept_frames"] += 1
+            self.stats["written_tokens"] += token_count
+            if decision == "recency_keep":
+                self.stats["recency_kept_frames"] += 1
+            if decision == "coverage_keep":
+                self.stats["coverage_kept_frames"] += 1
+            if decision == "budget_keep":
+                self.stats["budget_kept_frames"] += 1
+        else:
+            self.stats["skipped_frames"] += 1
+        self.recent_decisions.append(
+            {
+                "frame_idx": self.frame_idx,
+                "decision": decision,
+                "drift": drift,
+                "written_tokens": token_count if keep else 0,
+            }
+        )
+        self.frame_idx += 1
+
     def select_indices_from_signatures(self, signatures: torch.Tensor, token_count: int) -> torch.Tensor:
+        if self.selection_policy == "budget_topk":
+            return self.select_indices_from_window_signatures(signatures, token_count)
+
         keep_indices = []
         for local_idx in range(signatures.shape[0]):
             keep, drift, decision, update_anchor = self._should_keep(signatures[local_idx : local_idx + 1])
-            self.stats["input_frames"] += 1
-            self.stats["input_tokens"] += token_count
             if keep:
                 keep_indices.append(local_idx)
-                if update_anchor:
-                    self.anchor_feature = signatures[local_idx : local_idx + 1].detach()
-                self.stats["kept_frames"] += 1
-                self.stats["written_tokens"] += token_count
-                if decision == "recency_keep":
-                    self.stats["recency_kept_frames"] += 1
-                if decision == "coverage_keep":
-                    self.stats["coverage_kept_frames"] += 1
+            self._record_decision(local_idx, keep, drift, decision, update_anchor, signatures, token_count)
+
+        return torch.tensor(keep_indices, device=signatures.device, dtype=torch.long)
+
+    def select_indices_from_window_signatures(self, signatures: torch.Tensor, token_count: int) -> torch.Tensor:
+        if self.budget_window_size <= 0:
+            raise ValueError("budget_window_size must be > 0 when selection_policy='budget_topk'")
+
+        keep = {}
+        drifts = []
+        compare_anchor = self.anchor_feature
+        if compare_anchor is None and signatures.shape[0] > 0:
+            compare_anchor = signatures[0:1].detach()
+
+        for local_idx in range(signatures.shape[0]):
+            global_idx = self.frame_idx + local_idx
+            if compare_anchor is None:
+                drift = 0.0
             else:
-                self.stats["skipped_frames"] += 1
-            self.recent_decisions.append(
-                {
-                    "frame_idx": self.frame_idx,
-                    "decision": decision,
-                    "drift": drift,
-                    "written_tokens": token_count if keep else 0,
-                }
-            )
-            self.frame_idx += 1
+                similarity = F.cosine_similarity(signatures[local_idx : local_idx + 1], compare_anchor, dim=-1)
+                drift = float((1.0 - similarity).mean().item())
+            drifts.append(drift)
+
+            if self.anchor_feature is None and local_idx == 0:
+                keep[local_idx] = ("reference", True)
+            elif (global_idx % self.refresh_interval) == 0:
+                keep[local_idx] = ("refresh", True)
+            elif self.coverage_interval > 0 and (global_idx % self.coverage_interval) == 0:
+                keep[local_idx] = ("coverage_keep", self.coverage_updates_anchor)
+            elif self._in_recency_window(global_idx):
+                keep[local_idx] = ("recency_keep", self.recency_updates_anchor)
+
+        candidates_by_window = {}
+        for local_idx, drift in enumerate(drifts):
+            if local_idx in keep or drift <= self.skip_patch_threshold:
+                continue
+            global_idx = self.frame_idx + local_idx
+            window_id = global_idx // self.budget_window_size
+            candidates_by_window.setdefault(window_id, []).append((drift, local_idx))
+
+        for candidates in candidates_by_window.values():
+            candidates.sort(reverse=True)
+            for _, local_idx in candidates[: self.budget_keep_per_window]:
+                keep[local_idx] = ("budget_keep", True)
+
+        keep_indices = []
+        for local_idx, drift in enumerate(drifts):
+            if local_idx in keep:
+                decision, update_anchor = keep[local_idx]
+                keep_indices.append(local_idx)
+                self._record_decision(local_idx, True, drift, decision, update_anchor, signatures, token_count)
+            else:
+                self._record_decision(local_idx, False, drift, "skip", False, signatures, token_count)
 
         return torch.tensor(keep_indices, device=signatures.device, dtype=torch.long)
 
