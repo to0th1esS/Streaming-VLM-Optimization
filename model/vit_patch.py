@@ -22,6 +22,7 @@ def vit_patch_hf(model, **kwargs):
     )
     if kwargs.get("enable_semantic_stream", False):
         model.semantic_stream_compute_gate = kwargs.get("enable_semantic_compute_gate", False)
+        model.semantic_selection_feature_source = kwargs.get("semantic_selection_feature_source", "vit_embedding")
         model.semantic_stream_gate = SemanticStreamGate(
             refresh_interval=kwargs.get("semantic_refresh_interval", cache_interval),
             skip_patch_threshold=kwargs.get("semantic_skip_threshold", 0.01),
@@ -162,6 +163,16 @@ def _encode_video_chunk_with_semantic_compute_gate(self, video_chunk):
 def _encode_video_window_with_semantic_compute_gate(self, video):
     if video.shape[0] == 0:
         return
+    if getattr(self, "semantic_selection_feature_source", "vit_embedding") == "raw_rgb":
+        raw_signatures = _raw_rgb_signatures(video)
+        keep_indices = self.semantic_stream_gate.select_indices_from_signatures(
+            raw_signatures,
+            token_count=self.n_frame_tokens,
+        )
+        if keep_indices.numel() == 0:
+            return
+        video = video.index_select(0, keep_indices.to(video.device if video.is_cuda else "cpu"))
+
     pixel_values_videos = self.processor.video_processor(
         video,
         return_tensors="pt",
@@ -200,6 +211,18 @@ def _encode_video_window_with_semantic_compute_gate(self, video):
         return_dict=True,
     )
     self.kv_cache = output.past_key_values
+
+
+def _raw_rgb_signatures(video, grid_size=4):
+    if video.ndim != 4:
+        raise ValueError(f"Expected video tensor [frames, height, width, channels], got {tuple(video.shape)}")
+    frames = video.float()
+    if frames.max() > 1.0:
+        frames = frames / 255.0
+    frames = frames.permute(0, 3, 1, 2).contiguous()
+    pooled = torch.nn.functional.adaptive_avg_pool2d(frames, (grid_size, grid_size))
+    signatures = pooled.flatten(1)
+    return torch.nn.functional.normalize(signatures, dim=-1)
 
 
 @torch.inference_mode()

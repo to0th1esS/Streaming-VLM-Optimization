@@ -80,7 +80,7 @@ class SemanticStreamGate:
         if self.anchor_feature is None:
             return True, 0.0, "reference", True
         similarity = F.cosine_similarity(signature, self.anchor_feature, dim=-1)
-        drift = float((1.0 - similarity).mean().item())
+        drift = max(0.0, float((1.0 - similarity).mean().item()))
         forced_refresh = (self.frame_idx % self.refresh_interval) == 0
         if forced_refresh:
             return True, drift, "refresh", True
@@ -158,7 +158,7 @@ class SemanticStreamGate:
                 drift = 0.0
             else:
                 similarity = F.cosine_similarity(signatures[local_idx : local_idx + 1], compare_anchor, dim=-1)
-                drift = float((1.0 - similarity).mean().item())
+                drift = max(0.0, float((1.0 - similarity).mean().item()))
             drifts.append(drift)
 
             if self.anchor_feature is None and local_idx == 0:
