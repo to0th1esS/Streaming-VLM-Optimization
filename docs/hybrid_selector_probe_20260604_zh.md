@@ -1,5 +1,7 @@
 # Hybrid Semantic Selector 实验记录（2026-06-04）
 
+> 后续统一追加到 `docs/research_iteration_log_zh.md`。本文件保留为本轮原始实验记录。
+
 ## 1. 实验目的
 
 前两轮结果形成了一个明确矛盾：
@@ -219,4 +221,3 @@ hybrid two-stage semantic selector（混合两阶段语义选择器）
 2. 在 `RVS-Ego（第一视角视频问答）` 上复验，确认不是 Movie 特例；
 3. 用 Qwen2.5-VL judge（模型裁判）评估 hybrid vs periodic，避免只靠 token-F1；
 4. 继续下载或接入 `OVO-Bench（在线视频理解基准）` / `StreamingBench（流式视频理解基准）`，寻找更能体现语义增量选择优势的任务。
-
