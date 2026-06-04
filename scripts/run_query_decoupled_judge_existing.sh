@@ -7,6 +7,7 @@ JUDGE_MODEL="${JUDGE_MODEL:-/home/mllm/models/Qwen2.5-VL-7B-Instruct}"
 OUT_ROOT="${OUT_ROOT:-results/large_validation_query_decoupled_20260603}"
 REPEAT_IDX="${REPEAT_IDX:-0}"
 MAX_NEW_TOKENS="${MAX_NEW_TOKENS:-64}"
+FORCE="${FORCE:-false}"
 
 run_judge_for_method() {
   local method_dir="$1"
@@ -18,6 +19,11 @@ run_judge_for_method() {
   if [[ ! -f "$compare_csv" ]]; then
     echo "missing compare csv: $compare_csv" >&2
     return 1
+  fi
+
+  if [[ "$FORCE" != "true" && -f "$judge_json" && -f "$rep_dir/category_summary/category_summary_all.json" ]]; then
+    echo "skip existing judge: $rep_dir"
+    return
   fi
 
   echo "judge: $compare_csv"
