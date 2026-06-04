@@ -27,6 +27,8 @@ def vit_patch_hf(model, **kwargs):
             skip_patch_threshold=kwargs.get("semantic_skip_threshold", 0.01),
             recency_keep_frames=kwargs.get("semantic_recency_keep_frames", 0),
             recency_updates_anchor=kwargs.get("semantic_recency_updates_anchor", False),
+            coverage_interval=kwargs.get("semantic_coverage_interval", 0),
+            coverage_updates_anchor=kwargs.get("semantic_coverage_updates_anchor", False),
         )
         if not model.semantic_stream_compute_gate:
             model.vit_output_postprocess = model.semantic_stream_gate

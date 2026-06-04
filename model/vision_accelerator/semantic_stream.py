@@ -9,6 +9,8 @@ class SemanticStreamGate:
         skip_patch_threshold: float = 0.01,
         recency_keep_frames: int = 0,
         recency_updates_anchor: bool = False,
+        coverage_interval: int = 0,
+        coverage_updates_anchor: bool = False,
     ):
         if refresh_interval < 1:
             raise ValueError("refresh_interval must be >= 1")
@@ -16,10 +18,14 @@ class SemanticStreamGate:
             raise ValueError("skip_patch_threshold must be >= 0")
         if recency_keep_frames < 0:
             raise ValueError("recency_keep_frames must be >= 0")
+        if coverage_interval < 0:
+            raise ValueError("coverage_interval must be >= 0")
         self.refresh_interval = refresh_interval
         self.skip_patch_threshold = skip_patch_threshold
         self.recency_keep_frames = recency_keep_frames
         self.recency_updates_anchor = recency_updates_anchor
+        self.coverage_interval = coverage_interval
+        self.coverage_updates_anchor = coverage_updates_anchor
         self.anchor_feature = None
         self.frame_idx = 0
         self._recency_start_idx = None
@@ -31,6 +37,7 @@ class SemanticStreamGate:
             "input_tokens": 0,
             "written_tokens": 0,
             "recency_kept_frames": 0,
+            "coverage_kept_frames": 0,
         }
         self.recent_decisions = []
 
@@ -66,6 +73,8 @@ class SemanticStreamGate:
             return True, drift, "refresh", True
         if drift > self.skip_patch_threshold:
             return True, drift, "drift_keep", True
+        if self.coverage_interval > 0 and (self.frame_idx % self.coverage_interval) == 0:
+            return True, drift, "coverage_keep", self.coverage_updates_anchor
         if (
             self._recency_start_idx is not None
             and self._recency_start_idx <= self.frame_idx < self._recency_end_idx
@@ -89,6 +98,8 @@ class SemanticStreamGate:
                 self.stats["written_tokens"] += token_count
                 if decision == "recency_keep":
                     self.stats["recency_kept_frames"] += 1
+                if decision == "coverage_keep":
+                    self.stats["coverage_kept_frames"] += 1
             else:
                 self.stats["skipped_frames"] += 1
             self.recent_decisions.append(

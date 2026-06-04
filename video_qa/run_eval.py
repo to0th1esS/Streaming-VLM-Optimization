@@ -28,6 +28,8 @@ def append_semantic_stream_args(cmd, args):
         "--semantic_skip_threshold", str(args.semantic_skip_threshold),
         "--semantic_recency_keep_frames", str(args.semantic_recency_keep_frames),
         "--semantic_recency_updates_anchor", str(args.semantic_recency_updates_anchor),
+        "--semantic_coverage_interval", str(args.semantic_coverage_interval),
+        "--semantic_coverage_updates_anchor", str(args.semantic_coverage_updates_anchor),
         "--enable_query_aware_retrieval", str(args.enable_query_aware_retrieval),
         "--query_retrieval_policy", str(args.query_retrieval_policy),
         "--latest_retrieval_blocks", str(args.latest_retrieval_blocks),
@@ -294,6 +296,8 @@ if __name__ == "__main__":
     parser.add_argument("--semantic_skip_threshold", type=float, default=0.01)
     parser.add_argument("--semantic_recency_keep_frames", type=int, default=0)
     parser.add_argument("--semantic_recency_updates_anchor", type=str, default='false')
+    parser.add_argument("--semantic_coverage_interval", type=int, default=0)
+    parser.add_argument("--semantic_coverage_updates_anchor", type=str, default='false')
     parser.add_argument("--enable_query_aware_retrieval", type=str, default='false')
     parser.add_argument(
         "--query_retrieval_policy",
