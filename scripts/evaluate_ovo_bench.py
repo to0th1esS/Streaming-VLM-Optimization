@@ -160,6 +160,10 @@ def summarize(evaluated):
         int(float(row.get("vit_output_tokens", 0) or 0))
         for row in final_by_video.values()
     )
+    kv_cache_memory_bytes = [
+        int(float(row.get("kv_cache_memory_bytes", 0) or 0))
+        for row in final_by_video.values()
+    ]
 
     return {
         "samples": len(evaluated),
@@ -241,6 +245,15 @@ def summarize(evaluated):
                 if output_input_tokens
                 else 0.0
             ),
+        },
+        "kv_cache_memory": {
+            # 均值用于跨方法比较，峰值用于检查长视频的缓存压力。
+            "mean_bytes": (
+                mean(kv_cache_memory_bytes)
+                if kv_cache_memory_bytes
+                else 0.0
+            ),
+            "max_bytes": max(kv_cache_memory_bytes, default=0),
         },
     }
 

@@ -285,6 +285,12 @@ class ReKVStreamVQA(BaseVQA):
                     "innovation_tokens",
                     0,
                 ),
+                # 直接记录当前视频写入后的 KV cache（键值缓存）占用，避免只用 token 数量间接推断。
+                'kv_cache_memory_bytes': (
+                    int(self.qa_model.calc_memory_usage())
+                    if self.qa_model.kv_cache is not None
+                    else 0
+                ),
             })
  
 
