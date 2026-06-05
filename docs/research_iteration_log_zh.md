@@ -751,3 +751,200 @@ feature cosine / MSE 退回诊断指标，不再作为主要优化目标。
 4. 再用 7B 模型在相同子集运行 dense / true periodic / hybrid cm2；
 5. 比较 official accuracy（官方准确率）、strict accuracy（严格准确率）、编码时间、写入帧数和视觉 token 缩减；
 6. 若 hybrid 不能稳定优于 true periodic，则优先研究细粒度事件召回，而不是继续堆叠规则。
+
+### 10.9 OVO-Bench 端到端冒烟与 0.5B 子集结果
+
+远程结果路径：
+
+```text
+results/ovo_bench/smoke_0p5b_rec1
+results/ovo_bench/subset15_0p5b
+```
+
+REC 单查询冒烟实验验证了：
+
+- 0.5B 模型加载；
+- dense / true periodic / hybrid 三条路径；
+- GPU 视频编码；
+- CSV 元数据记录；
+- OVO 官方兼容评测；
+- 统一结果汇总。
+
+单查询中，0.5B 输出 `One` 而不是官方要求的数字 `1`，因此官方计数得分为 0。
+这是小模型的格式遵循问题，不是评测器错误。
+
+15 查询、12 类任务结果：
+
+| 方法 | kept / input（保留/输入帧） | encode time（编码时间） | speedup vs dense（相对密集加速） | official macro accuracy（官方宏平均准确率） |
+|---|---:|---:|---:|---:|
+| dense（密集） | 2380 / 2380 | 106.723s | 1.00x | 38.89% |
+| periodic96（96 秒周期） | 93 / 2380 | 3.874s | 27.55x | 38.89% |
+| hybrid cm2（修正预算前） | 108 / 2380 | 9.550s | 11.17x | 38.89% |
+
+阶段结论：
+
+```text
+0.5B 模型不足以稳定体现语义选帧差异；
+真正周期基线明显比旧周期实现更强；
+必须使用 7B 模型判断内容选择价值。
+```
+
+### 10.10 7B、15 查询初步结果
+
+远程结果路径：
+
+```text
+results/ovo_bench/subset15_7b
+```
+
+| 方法 | kept / input | token reduction（令牌减少） | encode time | speedup vs dense | official macro accuracy |
+|---|---:|---:|---:|---:|---:|
+| dense | 2380 / 2380 | 0.00% | 175.307s | 1.00x | 72.22% |
+| periodic96 | 93 / 2380 | 96.09% | 4.639s | 37.79x | 72.22% |
+| hybrid cm2（修正预算前） | 108 / 2380 | 95.46% | 10.358s | 16.92x | 77.78% |
+
+逐样本差异：
+
+- hybrid 相对 periodic：1 胜、0 负；
+- 唯一胜例为 ATR 任务，问题要求识别短暂出现目标的颜色。
+
+该结果提出了“语义变化驱动选帧可能优于均匀覆盖”的候选洞见，但样本过少，不能直接形成论文结论。
+
+### 10.11 7B、30 查询边界复验
+
+远程结果路径：
+
+```text
+results/ovo_bench/subset30_7b
+```
+
+数据规模：
+
+```text
+source items（源条目）=24
+queries（查询）=30
+input frames（输入帧）=6034
+backward / realtime / forward = 6 / 12 / 12 queries
+```
+
+首次运行结果：
+
+| 方法 | kept / input | encode time | speedup vs dense | official macro accuracy | query correct（查询正确数） |
+|---|---:|---:|---:|---:|---:|
+| dense | 6034 / 6034 | 583.270s | 1.00x | 69.44% | 21 / 30 |
+| periodic96 | 201 / 6034 | 13.836s | 42.16x | 69.44% | 21 / 30 |
+| hybrid cm2（修正预算前） | 230 / 6034 | 25.545s | 22.83x | 75.00% | 23 / 30 |
+
+hybrid 相对 periodic 的逐样本结果：
+
+```text
+wins（胜）=2
+losses（负）=0
+```
+
+两条胜例均为 ATR：
+
+1. `What is the color of the dog?`
+2. `What is the color of the fire I'm collecting?`
+
+这表明当前 hybrid 的收益集中在短暂属性证据，而不是所有任务普遍提升。
+
+### 10.12 预算公平性漏洞与修正
+
+进一步检查发现，旧 `budget_topk（预算 Top-K）` 在每个视频首窗口中：
+
+```text
+保留 reference frame（参考帧）
++ 再保留 1 个 budget frame（预算帧）
+```
+
+因此 `budget_keep_per_window=1` 在首窗口实际保留 2 帧。30 个视频中多出的 29 帧几乎完全由该问题解释。
+
+修正原则：
+
+- reference / refresh / coverage（参考/刷新/覆盖）帧占用窗口预算；
+- recency（最近帧保护）作为显式流式保障，不占语义预算；
+- 每个窗口的内容选择只能使用剩余预算。
+
+相关提交：
+
+```text
+91a2350 fix: enforce semantic window budget
+```
+
+本地验证：
+
+```text
+unittest（单元测试）=7 / 7 passed
+ViT sparse patch certification（ViT 稀疏补丁认证）=passed
+```
+
+### 10.13 修正后的公平对比
+
+| 方法 | kept / input | token reduction | encode time | speedup vs dense | official macro accuracy |
+|---|---:|---:|---:|---:|---:|
+| dense | 6034 / 6034 | 0.00% | 583.270s | 1.00x | 69.44% |
+| periodic96 | 201 / 6034 | 96.67% | 13.836s | 42.16x | 69.44% |
+| hybrid cm2 budget-fixed（预算修正） | 201 / 6034 | 96.67% | 25.491s | 22.88x | 72.22% |
+| periodic65（预算近似匹配） | 228 / 6034 | 96.22% | 14.714s | 39.64x | 75.00% |
+| raw RGB budget-fixed | 201 / 6034 | 96.67% | 25.406s | 22.96x | 69.44% |
+
+公平结论：
+
+1. 完全相同的 201 帧写入预算下，hybrid 比 periodic96 高 `2.78` 个百分点；
+2. hybrid 的编码时间是 periodic96 的 `1.84x`，候选选择成本仍然过高；
+3. periodic65 多写入 27 帧后达到 `75.00%`，并且仍比 hybrid 快；
+4. raw RGB 在相同预算下没有超过 periodic96，说明纯像素变化不足以稳定识别关键语义；
+5. raw RGB 与 hybrid 耗时接近，说明当前全分辨率 raw signature（原始像素签名）计算本身也很重，
+   “廉价预筛”在工程上尚未真正廉价。
+
+当前方法不能宣称全面优于均匀采样。更准确的表述是：
+
+```text
+在严格写入预算下，内容自适应选择可以提高任务准确率；
+但现有候选生成与语义复核开销使其尚未形成完整 Pareto 优势。
+```
+
+### 10.14 新的核心研究问题
+
+当前瓶颈已从“能否找到语义帧”收敛为：
+
+```text
+如何在不增加帧预算、不过度计算所有候选特征的条件下，
+同时获得周期覆盖和事件敏感性？
+```
+
+后续最终方法应围绕一个统一设计，而不是继续叠加规则：
+
+1. `coverage（时间覆盖）` 提供稳定的长时上下文下界；
+2. `novelty（事件新颖性）` 在固定预算内重分配保留位置，而不是额外加帧；
+3. 低成本 proposal（候选生成）必须在低分辨率或解码阶段完成；
+4. semantic verification（语义复核）只处理极少数候选，并需要与 ViT 稀疏层计算共享特征；
+5. 所有 forced keep（强制保留）必须进入统一预算记账。
+
+这可以凝练为后续候选方法：
+
+```text
+Budget-Neutral Coverage-Novelty Allocation
+（预算中性的覆盖-新颖性分配）
+```
+
+该方法的论文动机不是“工程上试了很多策略”，而是由两个可复现实验事实推出：
+
+```text
+Fact 1：纯周期覆盖速度极强，但会漏掉短暂属性事件；
+Fact 2：语义选择能找回事件，但当前复核成本破坏端到端效率。
+```
+
+### 10.15 资产最终状态
+
+2026-06-05 最终检查：
+
+```text
+src_videos parts（源视频分片）=5 / 5
+chunked_videos parts（预切片分片）=15 / 15
+30-query subset videos（30 查询子集视频）=30 / 30
+missing（缺失）=0
+```
+
+`chunked_videos.tar.partah` 已通过断点续传补齐到 `10GB`。
