@@ -164,6 +164,18 @@ def summarize(evaluated):
         int(float(row.get("kv_cache_memory_bytes", 0) or 0))
         for row in final_by_video.values()
     ]
+    kv_cache_cpu_memory_bytes = [
+        int(float(row.get("kv_cache_cpu_memory_bytes", 0) or 0))
+        for row in final_by_video.values()
+    ]
+    kv_cache_gpu_memory_bytes = [
+        int(float(row.get("kv_cache_gpu_memory_bytes", 0) or 0))
+        for row in final_by_video.values()
+    ]
+    kv_cache_logical_tokens = [
+        int(float(row.get("kv_cache_logical_tokens", 0) or 0))
+        for row in final_by_video.values()
+    ]
 
     return {
         "samples": len(evaluated),
@@ -254,6 +266,12 @@ def summarize(evaluated):
                 else 0.0
             ),
             "max_bytes": max(kv_cache_memory_bytes, default=0),
+            "mean_cpu_bytes": mean(kv_cache_cpu_memory_bytes),
+            "max_cpu_bytes": max(kv_cache_cpu_memory_bytes, default=0),
+            "mean_gpu_bytes": mean(kv_cache_gpu_memory_bytes),
+            "max_gpu_bytes": max(kv_cache_gpu_memory_bytes, default=0),
+            "mean_logical_tokens": mean(kv_cache_logical_tokens),
+            "max_logical_tokens": max(kv_cache_logical_tokens, default=0),
         },
     }
 

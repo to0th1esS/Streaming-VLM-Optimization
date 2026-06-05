@@ -81,3 +81,56 @@ class Abstract_ReKV:
         n_layers = len(self.kv_cache)
         memory = n_layers * self.kv_cache[0].calculate_cpu_memory()
         return memory
+
+    @staticmethod
+    def _tensor_memory_bytes(tensor):
+        if not isinstance(tensor, torch.Tensor):
+            return 0
+        return int(tensor.numel() * tensor.element_size())
+
+    def calc_cache_memory_usage(self):
+        """统计 ReKV 实际持有的 GPU/CPU KV cache（键值缓存）张量。"""
+        if self.kv_cache is None:
+            return {
+                "cpu_bytes": 0,
+                "gpu_bytes": 0,
+                "total_bytes": 0,
+                "logical_tokens": 0,
+            }
+
+        cpu_bytes = 0
+        gpu_bytes = 0
+        logical_tokens = 0
+        for layer_cache in self.kv_cache:
+            logical_tokens = max(
+                logical_tokens,
+                int(getattr(layer_cache, "length", 0)),
+            )
+            for name in ("local_k", "local_v", "init_k", "init_v", "global_buffer"):
+                gpu_bytes += self._tensor_memory_bytes(
+                    getattr(layer_cache, name, None)
+                )
+            for tensor in getattr(layer_cache, "global_remainder", ()):
+                gpu_bytes += self._tensor_memory_bytes(tensor)
+
+            cuda_cache = getattr(layer_cache, "cuda_cache", None)
+            gpu_bytes += self._tensor_memory_bytes(
+                getattr(cuda_cache, "data", None)
+            )
+            for block_keys in getattr(layer_cache, "block_k", ()):
+                gpu_bytes += self._tensor_memory_bytes(
+                    getattr(block_keys, "data", None)
+                )
+
+            # MemoryUnit 的 gpu_data 是 cuda_cache.data 的视图，不能重复计数。
+            for unit_blocks in getattr(layer_cache, "global_blocks", ()):
+                for block in unit_blocks:
+                    for tensor in getattr(block, "cpu_data", ()):
+                        cpu_bytes += self._tensor_memory_bytes(tensor)
+
+        return {
+            "cpu_bytes": cpu_bytes,
+            "gpu_bytes": gpu_bytes,
+            "total_bytes": cpu_bytes + gpu_bytes,
+            "logical_tokens": logical_tokens,
+        }

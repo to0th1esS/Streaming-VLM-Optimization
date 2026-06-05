@@ -161,11 +161,7 @@ class ReKVStreamVQA(BaseVQA):
                 video_start_idx = encode_end_idx
 
             # 在 QA 解码前读取视频 KV cache（键值缓存）；解码过程可能释放或替换主缓存。
-            kv_cache_memory_bytes = (
-                int(self.qa_model.calc_memory_usage())
-                if self.qa_model.kv_cache is not None
-                else 0
-            )
+            kv_cache_memory = self.qa_model.calc_cache_memory_usage()
 
             # OpenQA
             self._sync_cuda()
@@ -292,7 +288,10 @@ class ReKVStreamVQA(BaseVQA):
                     "innovation_tokens",
                     0,
                 ),
-                'kv_cache_memory_bytes': kv_cache_memory_bytes,
+                'kv_cache_memory_bytes': kv_cache_memory["total_bytes"],
+                'kv_cache_cpu_memory_bytes': kv_cache_memory["cpu_bytes"],
+                'kv_cache_gpu_memory_bytes': kv_cache_memory["gpu_bytes"],
+                'kv_cache_logical_tokens': kv_cache_memory["logical_tokens"],
             })
  
 
