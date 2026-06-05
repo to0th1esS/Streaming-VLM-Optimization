@@ -23,8 +23,10 @@ class SemanticStreamGate:
             raise ValueError("recency_keep_frames must be >= 0")
         if coverage_interval < 0:
             raise ValueError("coverage_interval must be >= 0")
-        if selection_policy not in {"threshold", "budget_topk"}:
-            raise ValueError("selection_policy must be 'threshold' or 'budget_topk'")
+        if selection_policy not in {"threshold", "budget_topk", "periodic"}:
+            raise ValueError(
+                "selection_policy must be 'threshold', 'budget_topk', or 'periodic'"
+            )
         if budget_window_size < 0:
             raise ValueError("budget_window_size must be >= 0")
         if budget_keep_per_window < 1:
@@ -143,7 +145,54 @@ class SemanticStreamGate:
         )
         self.frame_idx += 1
 
+    def select_periodic_indices(
+        self,
+        total_frames: int,
+        token_count: int,
+        device=None,
+    ) -> torch.Tensor:
+        keep_indices = []
+        for local_idx in range(total_frames):
+            global_idx = self.frame_idx
+            if global_idx % self.refresh_interval == 0:
+                keep = True
+                decision = "reference" if global_idx == 0 else "refresh"
+            elif self._in_recency_window(global_idx):
+                keep = True
+                decision = "recency_keep"
+            else:
+                keep = False
+                decision = "periodic_skip"
+
+            self.stats["input_frames"] += 1
+            self.stats["input_tokens"] += token_count
+            if keep:
+                keep_indices.append(local_idx)
+                self.stats["kept_frames"] += 1
+                self.stats["written_tokens"] += token_count
+                if decision == "recency_keep":
+                    self.stats["recency_kept_frames"] += 1
+            else:
+                self.stats["skipped_frames"] += 1
+            self.recent_decisions.append(
+                {
+                    "frame_idx": global_idx,
+                    "decision": decision,
+                    "drift": 0.0,
+                    "written_tokens": token_count if keep else 0,
+                }
+            )
+            self.frame_idx += 1
+
+        return torch.tensor(keep_indices, device=device, dtype=torch.long)
+
     def select_indices_from_signatures(self, signatures: torch.Tensor, token_count: int) -> torch.Tensor:
+        if self.selection_policy == "periodic":
+            return self.select_periodic_indices(
+                total_frames=int(signatures.shape[0]),
+                token_count=token_count,
+                device=signatures.device,
+            )
         if self.selection_policy == "budget_topk":
             return self.select_indices_from_window_signatures(signatures, token_count)
 

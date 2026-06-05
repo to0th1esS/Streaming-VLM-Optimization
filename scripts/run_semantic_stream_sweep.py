@@ -350,7 +350,7 @@ def parse_args():
     parser.add_argument("--semantic-coverage-updates-anchor", type=str2bool, default=False)
     parser.add_argument(
         "--semantic-selection-policy",
-        choices=["threshold", "budget_topk"],
+        choices=["threshold", "budget_topk", "periodic"],
         default="threshold",
     )
     parser.add_argument(

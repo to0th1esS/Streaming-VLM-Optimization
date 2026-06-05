@@ -303,7 +303,7 @@ if __name__ == "__main__":
     parser.add_argument("--semantic_recency_updates_anchor", type=str, default='false')
     parser.add_argument("--semantic_coverage_interval", type=int, default=0)
     parser.add_argument("--semantic_coverage_updates_anchor", type=str, default='false')
-    parser.add_argument("--semantic_selection_policy", type=str, default='threshold', choices=['threshold', 'budget_topk'])
+    parser.add_argument("--semantic_selection_policy", type=str, default='threshold', choices=['threshold', 'budget_topk', 'periodic'])
     parser.add_argument("--semantic_selection_feature_source", type=str, default='vit_embedding', choices=['vit_embedding', 'raw_rgb', 'hybrid'])
     parser.add_argument("--semantic_candidate_multiplier", type=int, default=4)
     parser.add_argument("--semantic_budget_window_size", type=int, default=0)

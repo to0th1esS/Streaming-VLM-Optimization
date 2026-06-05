@@ -172,6 +172,11 @@ class ReKVStreamVQA(BaseVQA):
             semantic_stats = getattr(semantic_gate, "stats", {}) if semantic_gate is not None else {}
             self.record[(self.retrieve_size, self.chunk_size)].append({
                 'video_id': video_sample['video_id'],
+                'benchmark': video_sample.get('benchmark', ''),
+                'benchmark_group': video_sample.get('benchmark_group', ''),
+                'benchmark_task': video_sample.get('benchmark_task', ''),
+                'official_id': video_sample.get('official_id', ''),
+                'query_index': video_sample.get('query_index', ''),
                 'question': question,
                 'answer': answer,
                 'answer_type': sample.get('answer_type', ''),

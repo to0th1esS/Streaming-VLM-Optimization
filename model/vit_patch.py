@@ -165,9 +165,19 @@ def _encode_video_window_with_semantic_compute_gate(self, video):
     if video.shape[0] == 0:
         return
     feature_source = getattr(self, "semantic_selection_feature_source", "vit_embedding")
+    selected_by_periodic = self.semantic_stream_gate.selection_policy == "periodic"
     selected_by_raw = feature_source == "raw_rgb"
     selected_by_hybrid = feature_source == "hybrid"
-    if selected_by_raw:
+    if selected_by_periodic:
+        keep_indices = self.semantic_stream_gate.select_periodic_indices(
+            total_frames=int(video.shape[0]),
+            token_count=self.n_frame_tokens,
+            device=video.device,
+        )
+        if keep_indices.numel() == 0:
+            return
+        video = video.index_select(0, keep_indices)
+    elif selected_by_raw:
         raw_signatures = _raw_rgb_signatures(video)
         keep_indices = self.semantic_stream_gate.select_indices_from_signatures(
             raw_signatures,
@@ -198,7 +208,7 @@ def _encode_video_window_with_semantic_compute_gate(self, video):
 
     flat_pixels = pixel_values_videos.view(batch_size * frames, channels, height, width)
     embeddings = self.vision_tower.vision_model.embeddings(flat_pixels)
-    if selected_by_raw:
+    if selected_by_periodic or selected_by_raw:
         kept_embeddings = embeddings
     elif selected_by_hybrid:
         signatures = self.semantic_stream_gate._frame_signature(embeddings)
@@ -306,7 +316,8 @@ def _new_encode_video(self, video, encode_chunk_size=None):
     semantic_gate = getattr(self, "semantic_stream_gate", None)
     if (
         getattr(self, "semantic_stream_compute_gate", False)
-        and getattr(semantic_gate, "selection_policy", "threshold") == "budget_topk"
+        and getattr(semantic_gate, "selection_policy", "threshold")
+        in {"budget_topk", "periodic"}
     ):
         _encode_video_window_with_semantic_compute_gate(self, video)
         return

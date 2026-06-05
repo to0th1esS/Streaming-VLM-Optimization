@@ -541,3 +541,204 @@ query-independent（查询无关）的前端选择是否足够泛化。
 3. 解析 StreamingBench CSV，写 adapter（适配器）前先确认 video id、timestamp（时间戳）、question type（问题类型）字段；
 4. 选择 StreamingBench 的 `Real-Time Visual Understanding（实时视觉理解）` 和 `Sequential Question Answering（顺序问答）` 作为首批边界任务；
 5. 后续方法层面重点检查 `raw_rgb prefilter（原始 RGB 预筛）` 是否漏掉细粒度动作、字幕、局部物体变化。
+
+## 10. 2026-06-05：OVO-Bench 接入与周期基线公平性修正
+
+### 10.1 本轮实验目的
+
+本轮不继续在 RVS 简单数据上调参，而是解决两个会直接影响论文可信度的问题：
+
+1. 接入更困难的 OVO-Bench（在线视频理解基准），用官方任务准确率替代过度依赖 `feature cosine（特征余弦相似度）` 和 `token-F1（词重叠 F1）`；
+2. 重新审计 `periodic sampling（周期/均匀采样）` 基线，确认它是否真的在 ViT 之前跳过未选帧。
+
+最终要回答：
+
+```text
+hybrid selector（混合选择器）的收益是否来自更好的语义选择，
+而不是来自一个实现成本偏高的周期基线？
+```
+
+### 10.2 OVO-Bench 官方协议梳理
+
+本地读取官方仓库 `JoeLeelyf/OVO-Bench` 的 `ovo_bench_new.json`：
+
+```text
+source items（源条目）= 1640
+
+Backward Tracing（向后追溯）：
+EPM=297, ASI=148, HLD=186
+
+Real-Time Visual Perception（实时视觉感知）：
+OCR=149, ACR=109, ATR=116, STU=178, FPD=101, OJR=184
+
+Forward Active Responding（前向主动响应）：
+REC=82, SSR=42, CRR=48
+```
+
+三类任务的输出形式：
+
+- 向后追溯和实时感知：multiple choice（多项选择），输出选项字母；
+- REC：repetition counting（重复动作计数），输出单个数字；
+- SSR / CRR：yes-no decision（是/否判断）。
+
+重要协议限制：
+
+```text
+官方 offline protocol（离线协议）为每个查询提供截止到查询时刻的视频片段，
+适合验证“观察到当前时刻时，稀疏语义流是否保留了回答所需信息”；
+但它不是一个跨多个查询持续不清空状态的完整在线会话。
+```
+
+因此 OVO-Bench 可以作为当前方法的强任务质量验证，但论文最终仍需要补充真正连续多查询的流式协议。
+
+### 10.3 新增实验基础设施
+
+新增文件：
+
+- `scripts/prepare_ovo_bench_subset.py`
+  - 将官方标注转换为现有 ReKV streaming VQA（流式视频问答）输入格式；
+  - 保留 `task（任务）`、`group（任务组）`、`official_id（官方编号）`、`query_index（查询序号）`；
+  - 支持按任务限制源条目数和每个源条目的查询数。
+- `scripts/evaluate_ovo_bench.py`
+  - 输出 official-compatible accuracy（官方兼容准确率）；
+  - 同时输出 strict accuracy（严格规范化准确率），避免宽松字符串匹配虚高。
+- `scripts/check_ovo_bench_assets.py`
+  - 检查 5 个源视频分片和 15 个预切片分片；
+  - 检查标注、已解压目录和子集所需视频。
+- `scripts/extract_ovo_bench_subset.sh`
+  - 通过分片管道只提取子集需要的视频；
+  - 不生成额外的 144GB 合并 tar（归档文件）。
+- `scripts/run_ovo_bench_validation.sh`
+  - 一键运行 dense（密集）、periodic（周期）、hybrid cm2（混合，候选倍数 2）；
+  - 明确关闭 `query-aware retrieval（查询感知检索）`，保持前端选择查询无关。
+- `scripts/summarize_ovo_bench_validation.py`
+  - 汇总准确率、编码时间、相对密集加速、帧保留和视觉令牌缩减。
+
+`video_qa/rekv_stream_vqa.py` 仅增加基准元数据透传，没有改变问答或缓存逻辑。
+
+### 10.4 本地适配验证
+
+从官方 1640 个源条目中执行最小覆盖抽样：
+
+```text
+每个任务抽 1 个源条目；
+前向任务每个源条目最多取 2 个查询；
+最终得到 15 个查询：
+backward（向后追溯）=3
+realtime（实时感知）=6
+forward（前向响应）=6
+```
+
+本地 Conda 环境结果：
+
+```text
+unittest（单元测试）：6 / 6 passed
+Python compile（语法编译）：passed
+原有 ViT sparse patch certification（ViT 稀疏补丁认证）：passed
+Shell scripts（Shell 脚本）：LF 换行，无 CRLF 污染
+```
+
+本机 RTX 5070 可被 `nvidia-smi` 识别，但既有 GPU Conda 环境加载 PyTorch 时出现：
+
+```text
+WinError 1455：页面文件太小，无法加载 nvperf_host.dll
+```
+
+因此本轮模型侧逻辑使用 CPU Conda 环境做确定性验证；真实模型实验继续放到远程 A100。
+
+### 10.5 关键发现：旧 periodic 并非真正低成本周期采样
+
+代码审计发现，旧配置：
+
+```text
+selection_policy=threshold
+skip_threshold=999
+refresh_interval=N
+```
+
+虽然最终保留帧近似周期采样，但执行顺序是：
+
+```text
+所有帧 -> 图像预处理 -> patch embedding（图像块嵌入）
+-> 再根据 refresh interval（刷新间隔）决定保留
+```
+
+这意味着旧 periodic 仍为所有帧支付了至少 patch embedding 和逐帧判别成本，不是通常意义上“按固定时间索引先采样、再送入 ViT”的强基线。
+
+对旧实验结论的影响必须分开处理：
+
+1. periodic 的保留帧数量和 QA 质量对比仍有参考价值；
+2. hybrid 相对 periodic 的编码时间加速被高估，不能直接进入论文主表；
+3. hybrid 相对 dense 的加速结果不因该问题自动失效，但需要在同一新代码版本重跑；
+4. 所有后续主要结果必须加入真正的 index-level periodic sampling（索引级周期采样）。
+
+### 10.6 周期基线修正
+
+新增 `selection_policy=periodic`：
+
+```text
+输入帧
+-> 按全局帧序号判断 frame_idx % interval == 0
+-> 可选保留最近 recency frames（最近帧）
+-> 只对选中帧执行图像预处理、patch embedding、ViT 和上下文写入
+```
+
+该策略不计算 RGB 差异、ViT 嵌入或语义相似度，因此它是低成本、查询无关、可复现的公平基线。
+
+单元测试覆盖：
+
+- 单批次周期索引正确性；
+- 跨批次全局帧序号连续性；
+- 最近帧保护；
+- 统计中的输入帧、保留帧和写入 token（令牌）一致性。
+
+### 10.7 远程资产与运行状态
+
+远程路径：
+
+```text
+代码：/home/yangjin/1#Streaming-VLM-Optimization
+模型：/home/mllm/models
+数据：/home/mllm/datasets/ovo_bench
+```
+
+2026-06-05 当前检查：
+
+```text
+远程代码 commit（提交）= b8d6e78
+工作区干净
+OVO-Bench 总大小约 179GB
+src_videos parts（源视频分片）= 5 / 5
+chunked_videos parts（预切片分片）= 14 / 15
+唯一缺失：chunked_videos.tar.partah
+磁盘剩余约 1.7TB
+GPU：8 x NVIDIA A100 80GB
+```
+
+官方标注已补到：
+
+```text
+/home/mllm/datasets/ovo_bench/ovo_bench_new.json
+```
+
+缺失的 `partah` 已启动单文件续补下载。完整后才能进行分片管道解压和真实视频验证。
+
+### 10.8 当前方向性结论
+
+本轮没有否定 hybrid 主线，而是提高了证据标准：
+
+```text
+最终方法仍是“廉价候选生成 + 少量语义复核 + 固定预算准入”；
+真正周期采样只作为强基线；
+OVO-Bench 官方任务准确率成为质量约束；
+feature cosine / MSE 退回诊断指标，不再作为主要优化目标。
+```
+
+下一轮必须依次完成：
+
+1. 补齐 `chunked_videos.tar.partah`；
+2. 只解压 15 条本地适配子集需要的视频；
+3. 先用 0.5B 模型做端到端冒烟验证；
+4. 再用 7B 模型在相同子集运行 dense / true periodic / hybrid cm2；
+5. 比较 official accuracy（官方准确率）、strict accuracy（严格准确率）、编码时间、写入帧数和视觉 token 缩减；
+6. 若 hybrid 不能稳定优于 true periodic，则优先研究细粒度事件召回，而不是继续堆叠规则。

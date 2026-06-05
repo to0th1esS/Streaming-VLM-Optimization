@@ -5,6 +5,7 @@ DATA_ROOT="${DATA_ROOT:-/home/mllm/datasets}"
 CONDA_BIN="${CONDA_BIN:-/root/miniconda3/bin/conda}"
 CONDA_ENV="${CONDA_ENV:-base}"
 HF_ENDPOINT="${HF_ENDPOINT:-https://hf-mirror.com}"
+OVO_ANNOTATION_URL="${OVO_ANNOTATION_URL:-https://raw.githubusercontent.com/JoeLeelyf/OVO-Bench/main/data/ovo_bench_new.json}"
 
 download_streamingbench_metadata() {
   mkdir -p "${DATA_ROOT}/streamingbench"
@@ -27,10 +28,18 @@ download_streamingbench_boundary_media() {
 
 download_ovo_bench() {
   mkdir -p "${DATA_ROOT}/ovo_bench"
+  download_ovo_annotation
   HF_ENDPOINT="${HF_ENDPOINT}" "${CONDA_BIN}" run -n "${CONDA_ENV}" huggingface-cli download \
     JoeLeelyf/OVO-Bench \
     --repo-type dataset \
     --local-dir "${DATA_ROOT}/ovo_bench"
+}
+
+download_ovo_annotation() {
+  mkdir -p "${DATA_ROOT}/ovo_bench"
+  curl --fail --location --retry 3 \
+    "${OVO_ANNOTATION_URL}" \
+    --output "${DATA_ROOT}/ovo_bench/ovo_bench_new.json"
 }
 
 case "${1:-metadata}" in
@@ -43,14 +52,16 @@ case "${1:-metadata}" in
   ovo)
     download_ovo_bench
     ;;
+  ovo-annotation)
+    download_ovo_annotation
+    ;;
   all)
     download_streamingbench_metadata
     download_streamingbench_boundary_media
     download_ovo_bench
     ;;
   *)
-    echo "Usage: $0 {metadata|streamingbench-media|ovo|all}" >&2
+    echo "Usage: $0 {metadata|streamingbench-media|ovo|ovo-annotation|all}" >&2
     exit 2
     ;;
 esac
-

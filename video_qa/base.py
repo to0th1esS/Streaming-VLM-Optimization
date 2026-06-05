@@ -210,7 +210,7 @@ def work(QA_CLASS):
     parser.add_argument("--semantic_coverage_updates_anchor", type=str2bool, nargs='?', const=True, default=False)
     parser.add_argument(
         "--semantic_selection_policy",
-        choices=["threshold", "budget_topk"],
+        choices=["threshold", "budget_topk", "periodic"],
         default="threshold",
     )
     parser.add_argument(
