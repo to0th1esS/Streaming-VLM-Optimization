@@ -5,6 +5,7 @@ from logzero import logger
 
 from model.vision_accelerator import InferenceContext
 from model.vision_accelerator import SemanticStreamGate
+from model.vision_accelerator import FixedBudgetTokenReducer
 from model.vision_accelerator import forward_siglip_adaptive
 from model.vision_accelerator import new_siglip_sdpa_attn_forward
 
@@ -17,10 +18,22 @@ def vit_patch_hf(model, **kwargs):
         update_token_ratio=update_token_ratio,
     )
     model.vit_sparse_encode_chunk_size = kwargs.get("vit_sparse_encode_chunk_size", 1)
-    model.vit_output_postprocess = kwargs.get(
-        "vit_output_postprocess",
-        _identity_vit_output_postprocess,
-    )
+    output_postprocess = kwargs.get("vit_output_postprocess")
+    output_token_policy = kwargs.get("vit_output_token_policy", "none")
+    if output_postprocess is not None:
+        model.vit_output_postprocess = output_postprocess
+    elif output_token_policy != "none":
+        model.vit_output_postprocess = FixedBudgetTokenReducer(
+            output_token_budget=int(
+                kwargs.get("vit_output_token_budget", model.n_frame_tokens)
+            ),
+            coverage_tokens=int(
+                kwargs.get("vit_output_coverage_tokens", 16)
+            ),
+            policy=output_token_policy,
+        )
+    else:
+        model.vit_output_postprocess = _identity_vit_output_postprocess
     if kwargs.get("enable_semantic_stream", False):
         model.semantic_stream_compute_gate = kwargs.get("enable_semantic_compute_gate", False)
         model.semantic_selection_feature_source = kwargs.get("semantic_selection_feature_source", "vit_embedding")
@@ -146,6 +159,13 @@ def _get_video_features_from_embeddings(self, embeddings, batch_size, frames):
 
     video_features = self.multi_modal_projector(selected_video_feature)
     video_features = self.apply_pooling(video_features)
+    video_features = _postprocess_vit_output(
+        self,
+        video_features,
+        batch_size=batch_size,
+        frames=frames,
+        selected_video_feature=selected_video_feature,
+    )
     return video_features.reshape(batch_size, frames * video_features.shape[1], -1)
 
 
@@ -198,7 +218,16 @@ def _get_video_features_from_embeddings_streaming(self, embeddings):
             selected_video_feature = selected_video_feature
 
         projected = self.multi_modal_projector(selected_video_feature)
-        frame_features.append(self.apply_pooling(projected))
+        pooled = self.apply_pooling(projected)
+        frame_features.append(
+            _postprocess_vit_output(
+                self,
+                pooled,
+                batch_size=1,
+                frames=1,
+                selected_video_feature=selected_video_feature,
+            )
+        )
 
     if not frame_features:
         return embeddings.new_empty((1, 0, 0))

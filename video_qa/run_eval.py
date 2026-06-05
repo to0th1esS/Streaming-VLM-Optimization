@@ -22,6 +22,9 @@ def append_semantic_stream_args(cmd, args):
         "--enable_vit_layer_sparse", str(args.enable_vit_layer_sparse),
         "--vit_cache_interval", str(args.vit_cache_interval),
         "--vit_update_token_ratio", str(args.vit_update_token_ratio),
+        "--vit_output_token_policy", str(args.vit_output_token_policy),
+        "--vit_output_token_budget", str(args.vit_output_token_budget),
+        "--vit_output_coverage_tokens", str(args.vit_output_coverage_tokens),
         "--enable_semantic_stream", str(args.enable_semantic_stream),
         "--enable_semantic_compute_gate", str(args.enable_semantic_compute_gate),
         "--semantic_refresh_interval", str(args.semantic_refresh_interval),
@@ -301,6 +304,9 @@ if __name__ == "__main__":
     parser.add_argument("--enable_vit_layer_sparse", type=str, default='true')
     parser.add_argument("--vit_cache_interval", type=int, default=2)
     parser.add_argument("--vit_update_token_ratio", type=float, default=0.25)
+    parser.add_argument("--vit_output_token_policy", type=str, default='none', choices=['none', 'uniform', 'coverage_innovation'])
+    parser.add_argument("--vit_output_token_budget", type=int, default=196)
+    parser.add_argument("--vit_output_coverage_tokens", type=int, default=16)
     parser.add_argument("--enable_semantic_stream", type=str, default='false')
     parser.add_argument("--enable_semantic_compute_gate", type=str, default='false')
     parser.add_argument("--semantic_refresh_interval", type=int, default=4)

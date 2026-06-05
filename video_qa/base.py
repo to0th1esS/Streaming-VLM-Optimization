@@ -200,6 +200,13 @@ def work(QA_CLASS):
     parser.add_argument("--enable_vit_layer_sparse", type=str2bool, nargs='?', const=True, default=True)
     parser.add_argument("--vit_cache_interval", type=int, default=2)
     parser.add_argument("--vit_update_token_ratio", type=float, default=0.25)
+    parser.add_argument(
+        "--vit_output_token_policy",
+        choices=["none", "uniform", "coverage_innovation"],
+        default="none",
+    )
+    parser.add_argument("--vit_output_token_budget", type=int, default=196)
+    parser.add_argument("--vit_output_coverage_tokens", type=int, default=16)
     parser.add_argument("--enable_semantic_stream", type=str2bool, nargs='?', const=True, default=False)
     parser.add_argument("--enable_semantic_compute_gate", type=str2bool, nargs='?', const=True, default=False)
     parser.add_argument("--semantic_refresh_interval", type=int, default=4)
@@ -277,6 +284,9 @@ def work(QA_CLASS):
                 "vit_sparse_config": {
                     "cache_interval": args.vit_cache_interval,
                     "update_token_ratio": args.vit_update_token_ratio,
+                    "vit_output_token_policy": args.vit_output_token_policy,
+                    "vit_output_token_budget": args.vit_output_token_budget,
+                    "vit_output_coverage_tokens": args.vit_output_coverage_tokens,
                     "enable_vit_layer_sparse": args.enable_vit_layer_sparse,
                     "enable_semantic_stream": args.enable_semantic_stream,
                     "enable_semantic_compute_gate": args.enable_semantic_compute_gate,

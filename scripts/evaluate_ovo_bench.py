@@ -152,6 +152,14 @@ def summarize(evaluated):
         int(float(row.get("vit_updated_patch_tokens", 0) or 0))
         for row in final_by_video.values()
     )
+    output_input_tokens = sum(
+        int(float(row.get("vit_output_input_tokens", 0) or 0))
+        for row in final_by_video.values()
+    )
+    output_tokens = sum(
+        int(float(row.get("vit_output_tokens", 0) or 0))
+        for row in final_by_video.values()
+    )
 
     return {
         "samples": len(evaluated),
@@ -222,6 +230,15 @@ def summarize(evaluated):
             "planned_update_ratio": (
                 updated_patch_tokens / total_patch_tokens
                 if total_patch_tokens
+                else 0.0
+            ),
+        },
+        "vit_output_reduction": {
+            "input_tokens": output_input_tokens,
+            "output_tokens": output_tokens,
+            "reduction_ratio": (
+                1.0 - output_tokens / output_input_tokens
+                if output_input_tokens
                 else 0.0
             ),
         },

@@ -23,6 +23,10 @@ class Abstract_ReKV:
         if inference_context is not None and hasattr(inference_context, "reset"):
             # 语言缓存和视觉参考必须在同一视频边界同时失效。
             inference_context.reset()
+        output_postprocess = getattr(self, "vit_output_postprocess", None)
+        if output_postprocess is not None and hasattr(output_postprocess, "reset"):
+            # 输出 token 的 rolling anchor（滚动锚点）不能跨视频复用。
+            output_postprocess.reset()
         torch.cuda.empty_cache()
         torch.cuda.ipc_collect()
 

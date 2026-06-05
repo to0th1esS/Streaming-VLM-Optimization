@@ -175,6 +175,12 @@ class ReKVStreamVQA(BaseVQA):
             qa_sec = time.perf_counter() - qa_start
             semantic_gate = getattr(self.qa_model, "semantic_stream_gate", None)
             semantic_stats = getattr(semantic_gate, "stats", {}) if semantic_gate is not None else {}
+            output_postprocess = getattr(
+                self.qa_model,
+                "vit_output_postprocess",
+                None,
+            )
+            token_reducer_stats = getattr(output_postprocess, "stats", {})
             self.record[(self.retrieve_size, self.chunk_size)].append({
                 'video_id': video_sample['video_id'],
                 'benchmark': video_sample.get('benchmark', ''),
@@ -261,6 +267,22 @@ class ReKVStreamVQA(BaseVQA):
                 ),
                 'vit_updated_patch_tokens': semantic_stats.get(
                     "vit_updated_patch_tokens",
+                    0,
+                ),
+                'vit_output_input_tokens': token_reducer_stats.get(
+                    "input_tokens",
+                    0,
+                ),
+                'vit_output_tokens': token_reducer_stats.get(
+                    "output_tokens",
+                    0,
+                ),
+                'vit_output_coverage_tokens': token_reducer_stats.get(
+                    "coverage_tokens",
+                    0,
+                ),
+                'vit_output_innovation_tokens': token_reducer_stats.get(
+                    "innovation_tokens",
                     0,
                 ),
             })

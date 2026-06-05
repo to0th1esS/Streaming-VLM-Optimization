@@ -111,7 +111,17 @@ def load_model(model_path='model_zoo/LLaVA/llava-onevision-qwen2-7b-ov-hf',
                n_init=None, n_local=None, topk=64, chunk_size=1,
                enable_vit_sparse=True, vit_sparse_config=None):
     device = 'cuda'
-    n_frame_tokens = 196
+    output_token_policy = (vit_sparse_config or {}).get(
+        "vit_output_token_policy",
+        "none",
+    )
+    if output_token_policy == "none":
+        n_frame_tokens = 196
+    else:
+        # 固定输出预算同时定义 ReKV 的视觉块长度，保证写入和检索仍按帧对齐。
+        n_frame_tokens = int(
+            (vit_sparse_config or {}).get("vit_output_token_budget", 196)
+        )
     processor = LlavaOnevisionProcessor.from_pretrained(model_path)
     
     init_prompt = '<|im_start|>system \nYou are a helpful assistant.<|im_end|><|im_start|>user '
