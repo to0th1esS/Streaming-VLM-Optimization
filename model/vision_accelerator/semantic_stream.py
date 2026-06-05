@@ -251,9 +251,21 @@ class SemanticStreamGate:
             window_id = global_idx // self.budget_window_size
             candidates_by_window.setdefault(window_id, []).append((drift, local_idx))
 
-        for candidates in candidates_by_window.values():
+        reserved_by_window = {}
+        for local_idx, (decision, _) in keep.items():
+            if decision == "recency_keep":
+                continue
+            global_idx = self.frame_idx + local_idx
+            window_id = global_idx // self.budget_window_size
+            reserved_by_window[window_id] = reserved_by_window.get(window_id, 0) + 1
+
+        for window_id, candidates in candidates_by_window.items():
             candidates.sort(reverse=True)
-            for _, local_idx in candidates[: self.budget_keep_per_window]:
+            remaining_budget = max(
+                0,
+                self.budget_keep_per_window - reserved_by_window.get(window_id, 0),
+            )
+            for _, local_idx in candidates[:remaining_budget]:
                 keep[local_idx] = ("budget_keep", True)
 
         keep_positions = []
@@ -308,9 +320,21 @@ class SemanticStreamGate:
             window_id = global_idx // self.budget_window_size
             candidates_by_window.setdefault(window_id, []).append((drift, local_idx))
 
-        for candidates in candidates_by_window.values():
+        reserved_by_window = {}
+        for local_idx, (decision, _) in keep.items():
+            if decision == "recency_keep":
+                continue
+            global_idx = self.frame_idx + local_idx
+            window_id = global_idx // self.budget_window_size
+            reserved_by_window[window_id] = reserved_by_window.get(window_id, 0) + 1
+
+        for window_id, candidates in candidates_by_window.items():
             candidates.sort(reverse=True)
-            for _, local_idx in candidates[: self.budget_keep_per_window]:
+            remaining_budget = max(
+                0,
+                self.budget_keep_per_window - reserved_by_window.get(window_id, 0),
+            )
+            for _, local_idx in candidates[:remaining_budget]:
                 keep[local_idx] = ("budget_keep", True)
 
         keep_indices = []
