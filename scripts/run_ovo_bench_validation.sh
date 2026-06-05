@@ -17,6 +17,9 @@ MAX_SOURCE_ITEMS_PER_TASK="${MAX_SOURCE_ITEMS_PER_TASK:-2}"
 MAX_QUERIES_PER_SOURCE="${MAX_QUERIES_PER_SOURCE:-2}"
 SOURCE_SELECTION="${SOURCE_SELECTION:-head}"
 QUERY_SELECTION="${QUERY_SELECTION:-head}"
+SOURCE_FOLD_COUNT="${SOURCE_FOLD_COUNT:-1}"
+SOURCE_FOLD_INDEX="${SOURCE_FOLD_INDEX:-0}"
+EXCLUDE_SUBSET_JSON="${EXCLUDE_SUBSET_JSON:-}"
 BUDGET_WINDOW="${BUDGET_WINDOW:-96}"
 RECENCY_KEEP="${RECENCY_KEEP:-4}"
 CANDIDATE_MULTIPLIER="${CANDIDATE_MULTIPLIER:-2}"
@@ -27,16 +30,24 @@ SALIENCY_Z_THRESHOLD="${SALIENCY_Z_THRESHOLD:-4.0}"
 PROFILE_BREAKDOWN="${PROFILE_BREAKDOWN:-false}"
 
 prepare_subset() {
-  "$PYTHON_BIN" scripts/prepare_ovo_bench_subset.py \
-    --source-json "$SOURCE_JSON" \
-    --chunked-dir "$CHUNKED_DIR" \
-    --output-json "$SUBSET_JSON" \
-    --tasks "$TASKS" \
-    --max-source-items-per-task "$MAX_SOURCE_ITEMS_PER_TASK" \
-    --max-queries-per-source "$MAX_QUERIES_PER_SOURCE" \
-    --source-selection "$SOURCE_SELECTION" \
-    --query-selection "$QUERY_SELECTION" \
+  args=(
+    scripts/prepare_ovo_bench_subset.py
+    --source-json "$SOURCE_JSON"
+    --chunked-dir "$CHUNKED_DIR"
+    --output-json "$SUBSET_JSON"
+    --tasks "$TASKS"
+    --max-source-items-per-task "$MAX_SOURCE_ITEMS_PER_TASK"
+    --max-queries-per-source "$MAX_QUERIES_PER_SOURCE"
+    --source-selection "$SOURCE_SELECTION"
+    --query-selection "$QUERY_SELECTION"
+    --source-fold-count "$SOURCE_FOLD_COUNT"
+    --source-fold-index "$SOURCE_FOLD_INDEX"
     --require-videos
+  )
+  if [[ -n "$EXCLUDE_SUBSET_JSON" ]]; then
+    args+=(--exclude-subset-json "$EXCLUDE_SUBSET_JSON")
+  fi
+  "$PYTHON_BIN" "${args[@]}"
 }
 
 run_method() {

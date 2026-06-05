@@ -112,6 +112,42 @@ class OVOBenchAdapterTest(unittest.TestCase):
         self.assertEqual(selected, [1, 4, 0])
         self.assertEqual(evenly_spaced_indices(5, 3), [0, 2, 4])
 
+    def test_duration_stratified_source_folds_are_disjoint(self):
+        items = [
+            {
+                "id": index,
+                "task": "EPM",
+                "realtime": duration,
+            }
+            for index, duration in enumerate(
+                (80, 10, 60, 30, 50, 20, 70, 40),
+                start=1,
+            )
+        ]
+
+        fold_zero = select_source_items(
+            items,
+            limit=3,
+            policy="duration_stratified",
+            fold_count=2,
+            fold_index=0,
+        )
+        fold_one = select_source_items(
+            items,
+            limit=3,
+            policy="duration_stratified",
+            fold_count=2,
+            fold_index=1,
+        )
+
+        self.assertTrue(
+            {item["id"] for item in fold_zero}.isdisjoint(
+                item["id"] for item in fold_one
+            )
+        )
+        self.assertEqual(len(fold_zero), 3)
+        self.assertEqual(len(fold_one), 3)
+
     def test_stratified_conversion_preserves_original_query_indices(self):
         annotation = {
             "id": 5,

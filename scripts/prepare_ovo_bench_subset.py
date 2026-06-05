@@ -34,6 +34,13 @@ def write_json(path, data):
         json.dump(data, handle, ensure_ascii=False, indent=2)
 
 
+def load_excluded_source_ids(subset_json):
+    if not subset_json:
+        return set()
+    rows = load_json(subset_json)
+    return {int(row["official_id"]) for row in rows}
+
+
 def format_multiple_choice_prompt(question, options):
     formatted_options = "\n".join(
         f"{chr(65 + index)}. {option}" for index, option in enumerate(options)
@@ -138,15 +145,24 @@ def evenly_spaced_indices(length, limit):
     ]
 
 
-def select_source_items(items, limit, policy):
-    if limit <= 0 or limit >= len(items):
-        return list(items)
+def select_source_items(items, limit, policy, fold_count=1, fold_index=0):
+    if fold_count < 1:
+        raise ValueError("fold_count must be >= 1")
+    if fold_index < 0 or fold_index >= fold_count:
+        raise ValueError("fold_index must satisfy 0 <= fold_index < fold_count")
     if policy == "head":
-        return list(items[:limit])
-    if policy == "duration_stratified":
+        ranked = list(items)
+    elif policy == "duration_stratified":
         ranked = sorted(items, key=lambda item: (item_end_time(item), int(item["id"])))
-        return [ranked[index] for index in evenly_spaced_indices(len(ranked), limit)]
-    raise ValueError(f"Unsupported source selection policy: {policy}")
+    else:
+        raise ValueError(f"Unsupported source selection policy: {policy}")
+
+    folded = ranked[fold_index::fold_count]
+    if limit <= 0 or limit >= len(folded):
+        return folded
+    if policy == "head":
+        return folded[:limit]
+    return [folded[index] for index in evenly_spaced_indices(len(folded), limit)]
 
 
 def select_query_indices(queries, limit, policy):
@@ -171,6 +187,8 @@ def convert_annotations(
     max_queries_per_source=0,
     source_selection="head",
     query_selection="head",
+    source_fold_count=1,
+    source_fold_index=0,
 ):
     selected_tasks = set(tasks)
     source_counts = Counter()
@@ -190,6 +208,8 @@ def convert_annotations(
             items,
             max_source_items_per_task,
             source_selection,
+            fold_count=source_fold_count,
+            fold_index=source_fold_index,
         )
     }
 
@@ -285,6 +305,13 @@ def parse_args():
         choices=("head", "time_stratified"),
         default="head",
     )
+    parser.add_argument("--source-fold-count", type=int, default=1)
+    parser.add_argument("--source-fold-index", type=int, default=0)
+    parser.add_argument(
+        "--exclude-subset-json",
+        default="",
+        help="Exclude every official source id already present in another converted subset.",
+    )
     parser.add_argument(
         "--require-videos",
         action="store_true",
@@ -296,6 +323,13 @@ def parse_args():
 def main():
     args = parse_args()
     annotations = load_json(args.source_json)
+    excluded_source_ids = load_excluded_source_ids(args.exclude_subset_json)
+    if excluded_source_ids:
+        annotations = [
+            item
+            for item in annotations
+            if int(item["id"]) not in excluded_source_ids
+        ]
     rows, source_counts = convert_annotations(
         annotations,
         chunked_dir=args.chunked_dir,
@@ -304,6 +338,8 @@ def main():
         max_queries_per_source=args.max_queries_per_source,
         source_selection=args.source_selection,
         query_selection=args.query_selection,
+        source_fold_count=args.source_fold_count,
+        source_fold_index=args.source_fold_index,
     )
     summary = summarize(rows, source_counts)
     summary.update(
@@ -313,6 +349,10 @@ def main():
             "chunked_dir": str(args.chunked_dir).replace("\\", "/"),
             "source_selection": args.source_selection,
             "query_selection": args.query_selection,
+            "source_fold_count": args.source_fold_count,
+            "source_fold_index": args.source_fold_index,
+            "exclude_subset_json": str(args.exclude_subset_json).replace("\\", "/"),
+            "excluded_source_items": len(excluded_source_ids),
         }
     )
     if args.require_videos and summary["missing_video_files"]:
