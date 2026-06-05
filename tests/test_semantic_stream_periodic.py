@@ -146,6 +146,88 @@ class SemanticStreamPeriodicTest(unittest.TestCase):
 
         self.assertEqual(selected.tolist(), [0, 6])
 
+    def test_saliency_pair_proposes_periodic_and_event_frames(self):
+        gate = SemanticStreamGate(
+            refresh_interval=1000,
+            selection_policy="budget_topk",
+            budget_window_size=4,
+            budget_keep_per_window=1,
+        )
+        signatures = torch.tensor(
+            [
+                [1.0, 0.0],
+                [1.0, 0.0],
+                [1.0, 0.0],
+                [1.0, 0.0],
+                [1.0, 0.0],
+                [1.0, 0.0],
+                [-1.0, 0.0],
+                [-1.0, 0.0],
+            ]
+        )
+
+        selected = _raw_rgb_candidate_indices(
+            signatures,
+            gate,
+            candidate_multiplier=1,
+            proposal_policy="saliency_paired",
+            saliency_z_threshold=1.5,
+        )
+
+        self.assertEqual(selected.tolist(), [0, 4, 6])
+
+    def test_paired_semantic_selection_keeps_periodic_for_similar_event(self):
+        gate = SemanticStreamGate(
+            refresh_interval=1000,
+            selection_policy="budget_topk",
+            budget_window_size=4,
+            budget_keep_per_window=1,
+        )
+        signatures = torch.tensor(
+            [
+                [1.0, 0.0],
+                [0.99, 0.01],
+                [1.0, 0.0],
+            ]
+        )
+
+        selected = gate.select_indices_from_paired_candidate_signatures(
+            signatures,
+            candidate_indices=torch.tensor([0, 2, 3]),
+            total_frames=4,
+            token_count=196,
+            similarity_threshold=0.8,
+        )
+
+        self.assertEqual(selected.tolist(), [0])
+        self.assertEqual(gate.stats["kept_frames"], 1)
+
+    def test_paired_semantic_selection_reallocates_for_distinct_event(self):
+        gate = SemanticStreamGate(
+            refresh_interval=1000,
+            selection_policy="budget_topk",
+            budget_window_size=4,
+            budget_keep_per_window=1,
+        )
+        signatures = torch.tensor(
+            [
+                [1.0, 0.0],
+                [0.0, 1.0],
+                [1.0, 0.0],
+            ]
+        )
+
+        selected = gate.select_indices_from_paired_candidate_signatures(
+            signatures,
+            candidate_indices=torch.tensor([0, 2, 3]),
+            total_frames=4,
+            token_count=196,
+            similarity_threshold=0.8,
+        )
+
+        self.assertEqual(selected.tolist(), [1])
+        self.assertEqual(gate.recent_decisions[2]["decision"], "semantic_reallocate")
+
     def test_unknown_raw_proposal_policy_fails(self):
         gate = SemanticStreamGate(
             refresh_interval=1000,

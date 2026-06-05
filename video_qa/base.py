@@ -227,10 +227,11 @@ def work(QA_CLASS):
     parser.add_argument("--semantic_raw_grid_size", type=int, default=4)
     parser.add_argument(
         "--semantic_raw_proposal_policy",
-        choices=["novelty_topk", "saliency_gated"],
+        choices=["novelty_topk", "saliency_gated", "saliency_paired"],
         default="novelty_topk",
     )
     parser.add_argument("--semantic_saliency_z_threshold", type=float, default=4.0)
+    parser.add_argument("--semantic_pair_similarity_threshold", type=float, default=0.8)
     parser.add_argument("--semantic_profile_breakdown", type=str2bool, nargs='?', const=True, default=False)
     parser.add_argument("--semantic_budget_window_size", type=int, default=0)
     parser.add_argument("--semantic_budget_keep_per_window", type=int, default=1)
@@ -292,6 +293,7 @@ def work(QA_CLASS):
                     "semantic_raw_grid_size": args.semantic_raw_grid_size,
                     "semantic_raw_proposal_policy": args.semantic_raw_proposal_policy,
                     "semantic_saliency_z_threshold": args.semantic_saliency_z_threshold,
+                    "semantic_pair_similarity_threshold": args.semantic_pair_similarity_threshold,
                     "semantic_profile_breakdown": args.semantic_profile_breakdown,
                     "semantic_budget_window_size": args.semantic_budget_window_size,
                     "semantic_budget_keep_per_window": args.semantic_budget_keep_per_window,

@@ -35,6 +35,10 @@ def vit_patch_hf(model, **kwargs):
             "semantic_saliency_z_threshold",
             4.0,
         )
+        model.semantic_pair_similarity_threshold = kwargs.get(
+            "semantic_pair_similarity_threshold",
+            0.8,
+        )
         model.semantic_profile_breakdown = kwargs.get("semantic_profile_breakdown", False)
         model.semantic_stream_gate = SemanticStreamGate(
             refresh_interval=kwargs.get("semantic_refresh_interval", cache_interval),
@@ -228,6 +232,12 @@ def _encode_video_window_with_semantic_compute_gate(self, video):
             return
         video = video.index_select(0, keep_indices.to(video.device if video.is_cuda else "cpu"))
     elif selected_by_hybrid:
+        proposal_policy = getattr(
+            self,
+            "semantic_raw_proposal_policy",
+            "novelty_topk",
+        )
+
         def propose_candidates():
             signatures = _raw_rgb_signatures(
                 video,
@@ -238,11 +248,7 @@ def _encode_video_window_with_semantic_compute_gate(self, video):
                 signatures,
                 self.semantic_stream_gate,
                 int(getattr(self, "semantic_candidate_multiplier", 4)),
-                proposal_policy=getattr(
-                    self,
-                    "semantic_raw_proposal_policy",
-                    "novelty_topk",
-                ),
+                proposal_policy=proposal_policy,
                 saliency_z_threshold=float(
                     getattr(self, "semantic_saliency_z_threshold", 4.0)
                 ),
@@ -284,12 +290,24 @@ def _encode_video_window_with_semantic_compute_gate(self, video):
     elif selected_by_hybrid:
         def verify_candidates():
             signatures = self.semantic_stream_gate._frame_signature(embeddings)
-            indices = self.semantic_stream_gate.select_indices_from_candidate_signatures(
-                signatures,
-                candidate_indices.to(signatures.device),
-                total_frames=int(raw_signatures.shape[0]),
-                token_count=self.n_frame_tokens,
-            )
+            if proposal_policy == "saliency_paired":
+                # 同窗口比较周期帧和事件帧，只在语义差异足够大时重分配固定槽位。
+                indices = self.semantic_stream_gate.select_indices_from_paired_candidate_signatures(
+                    signatures,
+                    candidate_indices.to(signatures.device),
+                    total_frames=int(raw_signatures.shape[0]),
+                    token_count=self.n_frame_tokens,
+                    similarity_threshold=float(
+                        getattr(self, "semantic_pair_similarity_threshold", 0.8)
+                    ),
+                )
+            else:
+                indices = self.semantic_stream_gate.select_indices_from_candidate_signatures(
+                    signatures,
+                    candidate_indices.to(signatures.device),
+                    total_frames=int(raw_signatures.shape[0]),
+                    token_count=self.n_frame_tokens,
+                )
             return indices
 
         keep_indices = _profile_call(
@@ -400,7 +418,11 @@ def _raw_rgb_candidate_indices(
     proposal_policy="novelty_topk",
     saliency_z_threshold=4.0,
 ):
-    if proposal_policy not in {"novelty_topk", "saliency_gated"}:
+    if proposal_policy not in {
+        "novelty_topk",
+        "saliency_gated",
+        "saliency_paired",
+    }:
         raise ValueError(f"Unknown raw proposal policy: {proposal_policy}")
     candidate_multiplier = max(1, candidate_multiplier)
     total_frames = int(raw_signatures.shape[0])
@@ -434,6 +456,47 @@ def _raw_rgb_candidate_indices(
     else:
         similarities = torch.nn.functional.cosine_similarity(curr, prev, dim=-1)
         deltas = [0.0] + [max(0.0, float(1.0 - value.item())) for value in similarities]
+
+    if proposal_policy == "saliency_paired":
+        selected = set()
+        candidates_by_window = {}
+        for local_idx, drift in enumerate(deltas):
+            global_idx = base_frame_idx + local_idx
+            if semantic_gate._in_recency_window(global_idx):
+                selected.add(local_idx)
+                continue
+            window_id = global_idx // budget_window_size
+            candidates_by_window.setdefault(window_id, []).append((drift, local_idx))
+
+        for window_id, candidates in candidates_by_window.items():
+            window_start_global = window_id * budget_window_size
+            periodic_local_idx = window_start_global - base_frame_idx
+            if not 0 <= periodic_local_idx < total_frames:
+                continue
+            selected.add(periodic_local_idx)
+
+            candidates.sort(reverse=True)
+            top_drift, top_local_idx = candidates[0]
+            window_values = torch.tensor(
+                [drift for drift, _ in candidates],
+                device=raw_signatures.device,
+                dtype=torch.float32,
+            )
+            mean = float(window_values.mean().item())
+            std = float(window_values.std(unbiased=False).item())
+            z_score = (top_drift - mean) / (std + 1e-6)
+            if (
+                z_score >= saliency_z_threshold
+                and top_local_idx != periodic_local_idx
+            ):
+                # RGB 只提出备选事件；最终是否替换由 ViT 嵌入层的配对语义差异决定。
+                selected.add(top_local_idx)
+
+        return torch.tensor(
+            sorted(selected),
+            device=raw_signatures.device,
+            dtype=torch.long,
+        )
 
     candidates_by_window = {}
     for local_idx, drift in enumerate(deltas):

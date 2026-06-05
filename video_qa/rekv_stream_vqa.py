@@ -232,6 +232,11 @@ class ReKVStreamVQA(BaseVQA):
                     "semantic_saliency_z_threshold",
                     0.0,
                 ),
+                'semantic_pair_similarity_threshold': getattr(
+                    self.qa_model,
+                    "semantic_pair_similarity_threshold",
+                    0.0,
+                ),
                 'semantic_proposal_sec': semantic_stats.get("proposal_sec", 0.0),
                 'semantic_preprocess_sec': semantic_stats.get("preprocess_sec", 0.0),
                 'semantic_embedding_sec': semantic_stats.get("embedding_sec", 0.0),

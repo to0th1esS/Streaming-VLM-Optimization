@@ -292,6 +292,123 @@ class SemanticStreamGate:
 
         return torch.tensor(keep_positions, device=signatures.device, dtype=torch.long)
 
+    def select_indices_from_paired_candidate_signatures(
+        self,
+        signatures: torch.Tensor,
+        candidate_indices: torch.Tensor,
+        total_frames: int,
+        token_count: int,
+        similarity_threshold: float,
+    ) -> torch.Tensor:
+        if self.selection_policy != "budget_topk":
+            raise ValueError(
+                "paired candidate selection requires selection_policy='budget_topk'"
+            )
+        if self.budget_window_size <= 0:
+            raise ValueError(
+                "budget_window_size must be > 0 for paired candidate selection"
+            )
+        if not -1.0 <= similarity_threshold <= 1.0:
+            raise ValueError("similarity_threshold must be within [-1, 1]")
+
+        candidate_indices = candidate_indices.to(
+            device=signatures.device,
+            dtype=torch.long,
+        )
+        candidate_positions = {
+            int(idx.item()): pos for pos, idx in enumerate(candidate_indices)
+        }
+        base_frame_idx = self.frame_idx
+        keep = {}
+        pair_similarities = {}
+
+        candidates_by_window = {}
+        for local_idx, sig_pos in candidate_positions.items():
+            global_idx = base_frame_idx + local_idx
+            if self._in_recency_window(global_idx):
+                keep[local_idx] = ("recency_keep", self.recency_updates_anchor)
+                continue
+            window_id = global_idx // self.budget_window_size
+            candidates_by_window.setdefault(window_id, []).append(
+                (local_idx, sig_pos)
+            )
+
+        for window_id, candidates in candidates_by_window.items():
+            periodic_local_idx = (
+                window_id * self.budget_window_size - base_frame_idx
+            )
+            periodic_position = candidate_positions.get(periodic_local_idx)
+            if periodic_position is None:
+                continue
+
+            selected_local_idx = periodic_local_idx
+            selected_similarity = 1.0
+            for local_idx, sig_pos in candidates:
+                if local_idx == periodic_local_idx:
+                    continue
+                similarity = float(
+                    F.cosine_similarity(
+                        signatures[periodic_position : periodic_position + 1],
+                        signatures[sig_pos : sig_pos + 1],
+                        dim=-1,
+                    ).item()
+                )
+                pair_similarities[local_idx] = similarity
+                if similarity < selected_similarity:
+                    selected_local_idx = local_idx
+                    selected_similarity = similarity
+
+            if (
+                selected_local_idx != periodic_local_idx
+                and selected_similarity <= similarity_threshold
+            ):
+                keep[selected_local_idx] = ("semantic_reallocate", True)
+            else:
+                keep[periodic_local_idx] = ("budget_keep", True)
+
+        keep_positions = []
+        for local_idx in range(total_frames):
+            sig_pos = candidate_positions.get(local_idx)
+            if sig_pos is None:
+                self._record_skip_without_signature(
+                    0.0,
+                    "prefilter_skip",
+                    token_count,
+                )
+                continue
+            if local_idx in keep:
+                decision, update_anchor = keep[local_idx]
+                similarity = pair_similarities.get(local_idx, 1.0)
+                drift = max(0.0, 1.0 - similarity)
+                keep_positions.append(sig_pos)
+                self._record_decision(
+                    sig_pos,
+                    True,
+                    drift,
+                    decision,
+                    update_anchor,
+                    signatures,
+                    token_count,
+                )
+            else:
+                similarity = pair_similarities.get(local_idx, 1.0)
+                drift = max(0.0, 1.0 - similarity)
+                self._record_decision(
+                    sig_pos,
+                    False,
+                    drift,
+                    "pair_reject",
+                    False,
+                    signatures,
+                    token_count,
+                )
+
+        return torch.tensor(
+            keep_positions,
+            device=signatures.device,
+            dtype=torch.long,
+        )
+
     def select_indices_from_window_signatures(self, signatures: torch.Tensor, token_count: int) -> torch.Tensor:
         if self.budget_window_size <= 0:
             raise ValueError("budget_window_size must be > 0 when selection_policy='budget_topk'")

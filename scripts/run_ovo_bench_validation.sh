@@ -27,6 +27,7 @@ RAW_SIGNATURE_MODE="${RAW_SIGNATURE_MODE:-avg_pool}"
 RAW_GRID_SIZE="${RAW_GRID_SIZE:-4}"
 RAW_PROPOSAL_POLICY="${RAW_PROPOSAL_POLICY:-novelty_topk}"
 SALIENCY_Z_THRESHOLD="${SALIENCY_Z_THRESHOLD:-4.0}"
+PAIR_SIMILARITY_THRESHOLD="${PAIR_SIMILARITY_THRESHOLD:-0.8}"
 PROFILE_BREAKDOWN="${PROFILE_BREAKDOWN:-false}"
 
 prepare_subset() {
@@ -98,6 +99,7 @@ main() {
     --semantic_raw_grid_size "$RAW_GRID_SIZE" \
     --semantic_raw_proposal_policy "$RAW_PROPOSAL_POLICY" \
     --semantic_saliency_z_threshold "$SALIENCY_Z_THRESHOLD" \
+    --semantic_pair_similarity_threshold "$PAIR_SIMILARITY_THRESHOLD" \
     --semantic_profile_breakdown "$PROFILE_BREAKDOWN"
 
   run_method "hybrid_cm${CANDIDATE_MULTIPLIER}" \
@@ -115,6 +117,7 @@ main() {
     --semantic_raw_grid_size "$RAW_GRID_SIZE" \
     --semantic_raw_proposal_policy "$RAW_PROPOSAL_POLICY" \
     --semantic_saliency_z_threshold "$SALIENCY_Z_THRESHOLD" \
+    --semantic_pair_similarity_threshold "$PAIR_SIMILARITY_THRESHOLD" \
     --semantic_profile_breakdown "$PROFILE_BREAKDOWN" \
     --semantic_budget_window_size "$BUDGET_WINDOW" \
     --semantic_budget_keep_per_window 1
