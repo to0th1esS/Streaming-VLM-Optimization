@@ -1405,6 +1405,11 @@ results/ovo_bench/stratified90_saliency_7b/saliency_z4p5
 
 ### 12.9 零重叠 held-out（留出）验证
 
+> 2026-06-05 数据审计修正：本小节当时只按 `official_id（官方条目编号）` 排除，
+> 后续发现开发集与本留出集仍共享 11 个 `original_video（原始视频）`。
+> 因此本小节结果只能视为探索性 `official-item-disjoint（官方条目不重叠）` 证据，
+> 不能作为视频级泛化结论。真正 `video-disjoint（原始视频不重叠）` 的 v2 结果见第 13 节。
+
 留出集：
 
 ```text
@@ -1521,3 +1526,332 @@ Confidence-Calibrated Semantic Slot Reallocation
 浅层 ViT 语义置信度能否区分“真实事件”与“黑帧/菜单/场景切换”，
 并在不恢复全量 ViT 计算的情况下扩大 ATR、ASI、SSR 等事件任务收益。
 ```
+
+## 13. 2026-06-05：稳定事件提议、视频级留出修正与配对语义验证
+
+### 13.1 本轮实验目的
+
+本轮围绕三个问题展开：
+
+1. 原始 RGB（红绿蓝像素）候选是否存在实现退化，导致黑帧被错误识别为最大变化？
+2. 浅层 ViT（视觉 Transformer）语义是否能在固定一个写入槽位内，可靠地决定周期帧和事件帧二选一？
+3. 前一轮留出集是否真的实现了原始视频级隔离？
+
+对应代码节点：
+
+```text
+525b51f feat: add stable proposal and shallow ViT probe
+ac6254f feat: add paired semantic slot verification
+2cdd59b feat: track paired semantic decisions
+c0e349f fix: isolate OVO subsets by original video
+bfb5209 fix: preserve the initial semantic anchor
+50b91d1 feat: analyze patch-level semantic changes
+```
+
+本地验证：
+
+```text
+unit tests（单元测试）=26/26 passed
+ViT sparse patch certification（ViT 稀疏补丁认证）=passed
+bash syntax check（脚本语法检查）=passed
+```
+
+### 13.2 原始 RGB 签名的零向量退化
+
+旧 `grid_sample（网格采样）` 签名对纯黑帧产生全零向量。
+PyTorch 的 cosine similarity（余弦相似度）对两个零向量返回 0，
+因此两个完全相同的黑帧会被错误解释为：
+
+```text
+similarity（相似度）=0
+drift（变化量）=1
+```
+
+这解释了候选可视化中大量黑帧、菜单边界和转场被选中的现象。
+
+修复：
+
+```text
+grid_sample_stable（稳定网格采样）
+= 网格 RGB 签名 + 常数维度 + 归一化
+```
+
+修复后，相同黑帧的余弦相似度为 1。
+旧 `grid_sample` 保留不变，用于复现实验。
+
+### 13.3 浅层 ViT 探针
+
+新增：
+
+```text
+scripts/analyze_shallow_vit_candidates.py
+```
+
+探针提取：
+
+- embedding layer（嵌入层）；
+- ViT 第 1、3、6 层；
+- 周期帧与事件帧的全局余弦相似度；
+- 事件帧与前后邻帧的持续性；
+- patch token（图像块词元）对应位置的相似度分布；
+- 最低 10% token 相似度；
+- 低于 0.90、0.95、0.99 的 token 比例。
+
+第一轮探针曾显示：部分有效候选在 embedding 层已与周期帧明显不同。
+但完整 QA 验证证明，全局相似度不能作为通用事件价值判据。
+
+### 13.4 配对语义槽位验证
+
+实现 `saliency_paired（显著性配对）`：
+
+```text
+每个窗口保留 periodic frame（周期帧）作为默认候选；
+RGB 显著性只提出一个 event frame（事件帧）；
+只计算两个候选的 ViT embedding（嵌入）；
+若两者全局相似度低于阈值，则事件帧替换周期帧；
+最终完整 ViT 编码和上下文写入仍只有一帧。
+```
+
+8 个旧方法变化视频的小规模阈值实验：
+
+| similarity threshold（相似度阈值） | QA 正确数 | semantic reallocations（语义重分配次数） |
+|---:|---:|---:|
+| 0.60 | 5/8 | 1 |
+| 0.80 | 6/8 | 4 |
+| 0.95 | 6/8 | 5 |
+
+该结果一度支持 0.80，但完整开发集给出反证：
+
+| 方法 | accuracy（准确率） | wins（胜） | losses（负） |
+|---|---:|---:|---:|
+| periodic96（96 帧周期采样） | 53.70% | - | - |
+| paired 0.80，允许首窗口替换 | 51.85% | 0 | 1 |
+
+唯一负例是 ovo-120 / EPM。
+它发生在第一个窗口，事件帧替换了初始化覆盖帧。
+
+加入首锚点约束：
+
+```text
+首窗口只建立 reference anchor（参考锚点）；
+首窗口不允许事件候选替换；
+后续窗口才允许槽位重分配。
+```
+
+修正后完整开发集：
+
+| 指标 | paired anchor（锚点配对） |
+|---|---:|
+| accuracy | 53.70% |
+| wins / losses | 0 / 0 |
+| prediction differences（预测差异） | 0 |
+| reallocated frames（重分配帧） | 18 |
+| candidate / preprocessed frames（候选/预处理帧） | 792 |
+| fully encoded / written frames（完整编码/写入帧） | 697 |
+
+结论：
+
+```text
+首锚点不可替换是有效且可泛化的覆盖约束；
+全局 ViT 相似度配对可以过滤风险，但也过滤了有用的细微事件；
+它不应作为最终主方法的硬门控。
+```
+
+### 13.5 旧留出集的数据泄漏审计
+
+旧开发集和旧留出集统计：
+
+| 子集 | queries（查询） | official items（官方条目） | unique original videos（唯一原始视频） |
+|---|---:|---:|---:|
+| development（开发） | 90 | 72 | 68 |
+| old held-out（旧留出） | 90 | 72 | 68 |
+
+虽然 `official_id` 交集为 0，但原始视频交集为 11：
+
+```text
+AutoEvalMetaData: 5
+Ego4D: 3
+MovieNet: 2
+YouTube Games: 1
+```
+
+典型例子：
+
+```text
+ovo-995 和 ovo-999 的 official_id 不同，
+但 original_video 都是：
+YouTube_Games/PLJ3VIGhVd3r8Int6IZT_v3S_BzG9RVfiG&index=2.mp4
+```
+
+修复 `scripts/prepare_ovo_bench_subset.py`：
+
+```text
+exclude official_id（排除官方条目编号）
+AND
+exclude original_video（排除原始视频路径）
+```
+
+### 13.6 真正 video-disjoint 的 held-out v2
+
+新子集：
+
+```text
+data/ovo_bench/ovo_rekv_heldout90_v2.json
+```
+
+构造与资产检查：
+
+| 指标 | 数值 |
+|---|---:|
+| queries | 90 |
+| official items | 72 |
+| unique original videos | 67 |
+| development official-id overlap | 0 |
+| development original-video overlap | 0 |
+| available clips（可用切片） | 90/90 |
+| input frames at 1 FPS（1 FPS 输入帧） | 27586 |
+
+缺失的 38 个切片从 OVO-Bench 官方分卷归档中选择性解压，最终无缺失资产。
+
+### 13.7 video-disjoint v2 主结果
+
+配置：
+
+```text
+model（模型）= LLaVA-OneVision-Qwen2-7B
+sample rate（采样率）= 1 FPS
+window（窗口）= 96 frames
+recency（最近帧保留）= 4
+query-aware（查询感知）= disabled
+z threshold（显著性阈值）= 3.5 / 4.0
+```
+
+结果：
+
+| 方法 | accuracy | wins | losses | encode time | kept / input |
+|---|---:|---:|---:|---:|---:|
+| periodic96 | 51.85% | - | - | 34.521s | 695 / 27586 |
+| stable saliency z=3.5（稳定显著性） | 53.70% | 2 | 1 | 35.712s | 691 / 27586 |
+| stable saliency z=4.0 | 53.70% | 2 | 0 | 34.377s | 691 / 27586 |
+| paired anchor z=3.5, s=0.8（锚点配对） | 53.70% | 1 | 0 | 35.282s | 695 / 27586 |
+
+`z=4.0` 的两个独立胜例：
+
+| video | task | periodic | stable z=4.0 |
+|---|---|---|---|
+| ovo-991 | OJR | wrong | correct |
+| ovo-1506-0 | CRR | wrong | correct |
+
+没有 QA 负例。
+
+### 13.8 开发集 + video-disjoint v2 的 180 条联合结果
+
+联合路径：
+
+```text
+results/ovo_bench/video_disjoint180_summary
+```
+
+| 方法 | official accuracy | encode time | preprocessed | fully encoded / written |
+|---|---:|---:|---:|---:|
+| periodic96 | 52.78% | 68.342s | 1392 | 1392 |
+| stable saliency z=4.0 | **54.17%** | 67.897s | 1392 | 1388 |
+| paired anchor | 53.70% | 70.175s | 1570 | 1392 |
+
+稳定显著性相对周期采样：
+
+```text
+absolute accuracy gain（绝对准确率提升）= +1.39 percentage points
+relative accuracy gain（相对准确率提升）= +2.63%
+error reduction（错误率相对下降）= 2.94%
+```
+
+分组变化：
+
+| group（任务组） | periodic | stable z=4.0 | change |
+|---|---:|---:|---:|
+| backward（回溯） | 44.44% | 44.44% | 0 |
+| realtime（实时） | 66.67% | 69.44% | +2.78 pp |
+| forward（前向） | 47.22% | 48.61% | +1.39 pp |
+
+三个无负迁移胜例覆盖：
+
+```text
+ATR：瞬时属性识别
+OJR：在线判断
+CRR：当前可回答性判断
+```
+
+单次联合编码时间只下降 0.65%，处于 GPU 波动范围。
+因此本轮不能宣称新的算法性加速，只能宣称：
+
+```text
+在几乎相同的视觉计算和上下文写入预算下，
+video-disjoint 评测准确率提高 1.39 个百分点，且未观察到负迁移。
+```
+
+### 13.9 patch token 分布分析
+
+全局帧签名会掩盖 token 级变化：
+
+- ovo-1506-0 的有效事件在第 6 层约 10% token 低于 0.90，相对局部；
+- ovo-991 的有效事件在第 6 层约 88% token 低于 0.90，属于大范围变化；
+- ovo-120 的首窗口负例约 91% token 低于 0.90，同样属于大范围变化。
+
+因此：
+
+```text
+局部变化比例不能单独区分有用事件和有害转场；
+全局相似度也不能单独区分；
+事件是否对任意未来 QA 有价值，本质上不能由单个通用硬阈值完全决定。
+```
+
+但 patch 分析仍给出重要方法启示：
+
+```text
+token 变化分布更适合决定“计算哪些 token”，
+而不是决定“整帧是否值得保留”。
+```
+
+### 13.10 当前方法结论
+
+当前最优且最简洁的版本可以概括为：
+
+```text
+Anchor-Preserved Saliency Slot Reallocation
+（锚点保持的显著性槽位重分配）
+```
+
+结构：
+
+1. `stable RGB signature（稳定 RGB 签名）` 修复黑帧零向量退化；
+2. 首窗口建立不可替换的 coverage anchor（覆盖锚点）；
+3. 每个后续 96 帧窗口默认保留周期槽位；
+4. 只有标准化显著性 `z>=4.0` 时，事件候选替换周期槽位；
+5. 总帧预算、完整 ViT 编码帧数和上下文写入预算基本不变；
+6. 选择过程完全 query-independent（查询无关）。
+
+这一设计比“全局语义差异越大越重要”更符合当前证据。
+
+### 13.11 下一步研究方向
+
+下一轮不继续堆叠帧级硬门控，而做正交联合：
+
+```text
+temporal saliency（时间显著性）
+决定“在哪个时间位置取帧”；
+
+patch-level semantic drift（图像块级语义变化）
+决定“该帧内部哪些 token 需要重计算”；
+
+fixed semantic slot budget（固定语义槽位预算）
+决定“写入多少视觉上下文”。
+```
+
+优先实验：
+
+1. 在 `stable saliency z=4.0` 上重新启用 ViT 层内稀疏更新；
+2. 用 patch 变化分布控制 dynamic token ratio（动态 token 比例），不再用它否决整帧；
+3. 测量 attention / MLP / gather-scatter / context write 的真实时间分解；
+4. 在 7B 和更大模型上复验端到端速度；
+5. 保持 video-disjoint v2 作为当前最小可信泛化集，并继续扩展更难流式 benchmark（基准）。
