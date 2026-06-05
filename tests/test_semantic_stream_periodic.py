@@ -2,7 +2,7 @@ import unittest
 
 import torch
 
-from model.vit_patch import _raw_rgb_signatures
+from model.vit_patch import _raw_rgb_candidate_indices, _raw_rgb_signatures
 from model.vision_accelerator.semantic_stream import SemanticStreamGate
 
 
@@ -91,6 +91,69 @@ class SemanticStreamPeriodicTest(unittest.TestCase):
             _raw_rgb_signatures(
                 torch.zeros(1, 2, 2, 3, dtype=torch.uint8),
                 mode="unknown",
+            )
+
+    def test_saliency_gate_falls_back_to_periodic_slot_without_peak(self):
+        gate = SemanticStreamGate(
+            refresh_interval=1000,
+            selection_policy="budget_topk",
+            budget_window_size=4,
+            budget_keep_per_window=1,
+        )
+        signatures = torch.tensor([[1.0, 0.0]] * 8)
+
+        selected = _raw_rgb_candidate_indices(
+            signatures,
+            gate,
+            candidate_multiplier=1,
+            proposal_policy="saliency_gated",
+            saliency_z_threshold=1.5,
+        )
+
+        self.assertEqual(selected.tolist(), [0, 4])
+
+    def test_saliency_gate_replaces_periodic_slot_for_clear_peak(self):
+        gate = SemanticStreamGate(
+            refresh_interval=1000,
+            selection_policy="budget_topk",
+            budget_window_size=4,
+            budget_keep_per_window=1,
+        )
+        signatures = torch.tensor(
+            [
+                [1.0, 0.0],
+                [1.0, 0.0],
+                [1.0, 0.0],
+                [1.0, 0.0],
+                [1.0, 0.0],
+                [1.0, 0.0],
+                [-1.0, 0.0],
+                [-1.0, 0.0],
+            ]
+        )
+
+        selected = _raw_rgb_candidate_indices(
+            signatures,
+            gate,
+            candidate_multiplier=1,
+            proposal_policy="saliency_gated",
+            saliency_z_threshold=1.5,
+        )
+
+        self.assertEqual(selected.tolist(), [0, 6])
+
+    def test_unknown_raw_proposal_policy_fails(self):
+        gate = SemanticStreamGate(
+            refresh_interval=1000,
+            selection_policy="budget_topk",
+            budget_window_size=4,
+        )
+        with self.assertRaises(ValueError):
+            _raw_rgb_candidate_indices(
+                torch.tensor([[1.0, 0.0]]),
+                gate,
+                candidate_multiplier=1,
+                proposal_policy="unknown",
             )
 
 

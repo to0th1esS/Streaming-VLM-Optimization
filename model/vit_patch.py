@@ -27,6 +27,14 @@ def vit_patch_hf(model, **kwargs):
         model.semantic_candidate_multiplier = kwargs.get("semantic_candidate_multiplier", 4)
         model.semantic_raw_signature_mode = kwargs.get("semantic_raw_signature_mode", "avg_pool")
         model.semantic_raw_grid_size = kwargs.get("semantic_raw_grid_size", 4)
+        model.semantic_raw_proposal_policy = kwargs.get(
+            "semantic_raw_proposal_policy",
+            "novelty_topk",
+        )
+        model.semantic_saliency_z_threshold = kwargs.get(
+            "semantic_saliency_z_threshold",
+            4.0,
+        )
         model.semantic_profile_breakdown = kwargs.get("semantic_profile_breakdown", False)
         model.semantic_stream_gate = SemanticStreamGate(
             refresh_interval=kwargs.get("semantic_refresh_interval", cache_interval),
@@ -230,6 +238,14 @@ def _encode_video_window_with_semantic_compute_gate(self, video):
                 signatures,
                 self.semantic_stream_gate,
                 int(getattr(self, "semantic_candidate_multiplier", 4)),
+                proposal_policy=getattr(
+                    self,
+                    "semantic_raw_proposal_policy",
+                    "novelty_topk",
+                ),
+                saliency_z_threshold=float(
+                    getattr(self, "semantic_saliency_z_threshold", 4.0)
+                ),
             )
             return signatures, indices
 
@@ -363,7 +379,15 @@ def _raw_rgb_signatures(video, grid_size=4, mode="avg_pool"):
     return torch.nn.functional.normalize(signatures, dim=-1)
 
 
-def _raw_rgb_candidate_indices(raw_signatures, semantic_gate, candidate_multiplier):
+def _raw_rgb_candidate_indices(
+    raw_signatures,
+    semantic_gate,
+    candidate_multiplier,
+    proposal_policy="novelty_topk",
+    saliency_z_threshold=4.0,
+):
+    if proposal_policy not in {"novelty_topk", "saliency_gated"}:
+        raise ValueError(f"Unknown raw proposal policy: {proposal_policy}")
     candidate_multiplier = max(1, candidate_multiplier)
     total_frames = int(raw_signatures.shape[0])
     if total_frames == 0:
@@ -374,14 +398,18 @@ def _raw_rgb_candidate_indices(raw_signatures, semantic_gate, candidate_multipli
     budget_keep_per_window = max(1, int(semantic_gate.budget_keep_per_window))
     candidate_budget = candidate_multiplier * budget_keep_per_window
     forced = set()
+    reserved = set()
     if semantic_gate.anchor_feature is None:
         forced.add(0)
+        reserved.add(0)
     for local_idx in range(total_frames):
         global_idx = base_frame_idx + local_idx
         if global_idx % int(semantic_gate.refresh_interval) == 0:
             forced.add(local_idx)
+            reserved.add(local_idx)
         if semantic_gate.coverage_interval > 0 and global_idx % int(semantic_gate.coverage_interval) == 0:
             forced.add(local_idx)
+            reserved.add(local_idx)
         if semantic_gate._in_recency_window(global_idx):
             forced.add(local_idx)
 
@@ -402,7 +430,36 @@ def _raw_rgb_candidate_indices(raw_signatures, semantic_gate, candidate_multipli
         candidates_by_window.setdefault(window_id, []).append((drift, local_idx))
 
     selected = set(forced)
-    for candidates in candidates_by_window.values():
+    for window_id, candidates in candidates_by_window.items():
+        if proposal_policy == "saliency_gated":
+            reserved_count = sum(
+                (base_frame_idx + local_idx) // budget_window_size == window_id
+                for local_idx in reserved
+            )
+            if reserved_count >= budget_keep_per_window:
+                continue
+            candidates.sort(reverse=True)
+            top_drift, top_local_idx = candidates[0]
+            window_values = torch.tensor(
+                [drift for drift, _ in candidates],
+                device=raw_signatures.device,
+                dtype=torch.float32,
+            )
+            mean = float(window_values.mean().item())
+            std = float(window_values.std(unbiased=False).item())
+            z_score = (top_drift - mean) / (std + 1e-6)
+            window_start_global = window_id * budget_window_size
+            periodic_local_idx = window_start_global - base_frame_idx
+            if (
+                z_score < saliency_z_threshold
+                and 0 <= periodic_local_idx < total_frames
+                and periodic_local_idx not in forced
+            ):
+                selected.add(periodic_local_idx)
+            else:
+                selected.add(top_local_idx)
+            continue
+
         candidates.sort(reverse=True)
         for _, local_idx in candidates[:candidate_budget]:
             selected.add(local_idx)
