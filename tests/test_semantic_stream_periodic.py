@@ -4,6 +4,10 @@ import torch
 
 from model.vit_patch import _raw_rgb_candidate_indices, _raw_rgb_signatures
 from model.vision_accelerator.semantic_stream import SemanticStreamGate
+from scripts.analyze_shallow_vit_candidates import (
+    feature_statistics,
+    window_proposals,
+)
 
 
 class SemanticStreamPeriodicTest(unittest.TestCase):
@@ -155,6 +159,53 @@ class SemanticStreamPeriodicTest(unittest.TestCase):
                 candidate_multiplier=1,
                 proposal_policy="unknown",
             )
+
+    def test_shallow_probe_finds_salient_window_peak(self):
+        frames = torch.zeros(8, 4, 4, 3, dtype=torch.uint8)
+        frames[..., 0] = 255
+        frames[4:, ..., 0] = 0
+        frames[4:, ..., 2] = 255
+
+        proposals = window_proposals(
+            frames.numpy(),
+            window_size=4,
+            grid_size=2,
+            z_threshold=1.0,
+        )
+
+        self.assertEqual(len(proposals), 1)
+        self.assertEqual(proposals[0]["window_start"], 4)
+        self.assertEqual(proposals[0]["novelty_index"], 4)
+
+    def test_stable_grid_signature_keeps_identical_black_frames_similar(self):
+        frames = torch.zeros(2, 4, 4, 3, dtype=torch.uint8)
+
+        signatures = _raw_rgb_signatures(
+            frames,
+            grid_size=2,
+            mode="grid_sample_stable",
+        )
+        similarity = torch.nn.functional.cosine_similarity(
+            signatures[0:1],
+            signatures[1:2],
+            dim=-1,
+        )
+
+        self.assertAlmostEqual(float(similarity.item()), 1.0, places=6)
+
+    def test_shallow_probe_feature_statistics(self):
+        features = torch.tensor(
+            [
+                [[1.0, 0.0], [1.0, 0.0]],
+                [[1.0, 0.0], [0.0, 1.0]],
+            ]
+        )
+
+        signatures, dispersion = feature_statistics(features)
+
+        self.assertEqual(tuple(signatures.shape), (2, 2))
+        self.assertAlmostEqual(float(dispersion[0]), 0.0, places=6)
+        self.assertGreater(float(dispersion[1]), 0.0)
 
 
 if __name__ == "__main__":

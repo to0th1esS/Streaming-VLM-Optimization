@@ -358,7 +358,7 @@ def _raw_rgb_signatures(video, grid_size=4, mode="avg_pool"):
             frames,
             (grid_size, grid_size),
         ).flatten(1)
-    elif mode == "grid_sample":
+    elif mode in {"grid_sample", "grid_sample_stable"}:
         height, width = int(video.shape[1]), int(video.shape[2])
         y_indices = (
             (torch.arange(grid_size, device=video.device, dtype=torch.float32) + 0.5)
@@ -374,6 +374,20 @@ def _raw_rgb_signatures(video, grid_size=4, mode="avg_pool"):
         if video.dtype == torch.uint8:
             sampled = sampled / 255.0
         signatures = sampled.flatten(1)
+        if mode == "grid_sample_stable":
+            # 追加常数维度，避免纯黑帧形成零向量并被余弦距离误判为剧烈变化。
+            signatures = torch.cat(
+                [
+                    signatures,
+                    torch.ones(
+                        signatures.shape[0],
+                        1,
+                        device=signatures.device,
+                        dtype=signatures.dtype,
+                    ),
+                ],
+                dim=-1,
+            )
     else:
         raise ValueError(f"Unknown raw RGB signature mode: {mode}")
     return torch.nn.functional.normalize(signatures, dim=-1)

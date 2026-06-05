@@ -221,7 +221,7 @@ def work(QA_CLASS):
     parser.add_argument("--semantic_candidate_multiplier", type=int, default=4)
     parser.add_argument(
         "--semantic_raw_signature_mode",
-        choices=["avg_pool", "grid_sample"],
+        choices=["avg_pool", "grid_sample", "grid_sample_stable"],
         default="avg_pool",
     )
     parser.add_argument("--semantic_raw_grid_size", type=int, default=4)

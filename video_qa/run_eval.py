@@ -311,7 +311,7 @@ if __name__ == "__main__":
     parser.add_argument("--semantic_selection_policy", type=str, default='threshold', choices=['threshold', 'budget_topk', 'periodic'])
     parser.add_argument("--semantic_selection_feature_source", type=str, default='vit_embedding', choices=['vit_embedding', 'raw_rgb', 'hybrid'])
     parser.add_argument("--semantic_candidate_multiplier", type=int, default=4)
-    parser.add_argument("--semantic_raw_signature_mode", type=str, default='avg_pool', choices=['avg_pool', 'grid_sample'])
+    parser.add_argument("--semantic_raw_signature_mode", type=str, default='avg_pool', choices=['avg_pool', 'grid_sample', 'grid_sample_stable'])
     parser.add_argument("--semantic_raw_grid_size", type=int, default=4)
     parser.add_argument("--semantic_raw_proposal_policy", type=str, default='novelty_topk', choices=['novelty_topk', 'saliency_gated'])
     parser.add_argument("--semantic_saliency_z_threshold", type=float, default=4.0)
