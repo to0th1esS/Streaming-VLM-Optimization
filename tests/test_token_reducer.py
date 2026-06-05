@@ -63,6 +63,24 @@ class FixedBudgetTokenReducerTest(unittest.TestCase):
         self.assertEqual(reducer.stats["frames"], 0)
         self.assertEqual(reducer.stats["output_tokens"], 0)
 
+    def test_selection_features_can_differ_from_output_features(self):
+        reducer = FixedBudgetTokenReducer(
+            output_token_budget=2,
+            coverage_tokens=1,
+            policy="coverage_innovation",
+        )
+        output = torch.arange(12, dtype=torch.float32).reshape(1, 4, 3)
+        reference = torch.tensor(
+            [[[1.0, 0.0], [1.0, 0.0], [1.0, 0.0], [1.0, 0.0]]]
+        )
+        changed = reference.clone()
+        changed[0, 2] = torch.tensor([-1.0, 0.0])
+
+        reducer(output, frames=1, selection_features=reference)
+        selected = reducer(output, frames=1, selection_features=changed)
+
+        self.assertTrue(torch.equal(selected[0, 1], output[0, 2]))
+
 
 if __name__ == "__main__":
     unittest.main()

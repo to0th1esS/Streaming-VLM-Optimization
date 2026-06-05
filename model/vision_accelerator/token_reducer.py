@@ -107,7 +107,14 @@ class FixedBudgetTokenReducer:
         )
 
     @torch.inference_mode()
-    def __call__(self, video_features, batch_size=1, frames=1, **kwargs):
+    def __call__(
+        self,
+        video_features,
+        batch_size=1,
+        frames=1,
+        selection_features=None,
+        **kwargs,
+    ):
         if batch_size != 1:
             raise ValueError("FixedBudgetTokenReducer currently requires batch_size=1")
         if video_features.ndim != 3:
@@ -118,14 +125,23 @@ class FixedBudgetTokenReducer:
             raise ValueError(
                 "video_features frame dimension must match the frames argument"
             )
+        if selection_features is None:
+            selection_features = video_features
+        if selection_features.shape[:2] != video_features.shape[:2]:
+            raise ValueError(
+                "selection_features must match video_features in frames and tokens"
+            )
 
         reduced_frames = []
-        for frame_features in video_features:
+        for frame_features, frame_selection_features in zip(
+            video_features,
+            selection_features,
+        ):
             selected, coverage_count, innovation_count = self._select_indices(
-                frame_features
+                frame_selection_features
             )
             reduced_frames.append(frame_features.index_select(0, selected))
-            self.previous_features = frame_features.detach()
+            self.previous_features = frame_selection_features.detach()
             self.stats["input_tokens"] += int(frame_features.shape[0])
             self.stats["output_tokens"] += int(selected.numel())
             self.stats["frames"] += 1

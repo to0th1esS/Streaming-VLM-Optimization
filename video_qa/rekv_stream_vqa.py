@@ -288,6 +288,11 @@ class ReKVStreamVQA(BaseVQA):
                     "innovation_tokens",
                     0,
                 ),
+                'vit_output_selection_space': getattr(
+                    self.qa_model,
+                    "vit_output_selection_space",
+                    "projected",
+                ),
                 'kv_cache_memory_bytes': kv_cache_memory["total_bytes"],
                 'kv_cache_cpu_memory_bytes': kv_cache_memory["cpu_bytes"],
                 'kv_cache_gpu_memory_bytes': kv_cache_memory["gpu_bytes"],

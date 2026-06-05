@@ -207,6 +207,11 @@ def work(QA_CLASS):
     )
     parser.add_argument("--vit_output_token_budget", type=int, default=196)
     parser.add_argument("--vit_output_coverage_tokens", type=int, default=16)
+    parser.add_argument(
+        "--vit_output_selection_space",
+        choices=["projected", "vit_native"],
+        default="projected",
+    )
     parser.add_argument("--enable_semantic_stream", type=str2bool, nargs='?', const=True, default=False)
     parser.add_argument("--enable_semantic_compute_gate", type=str2bool, nargs='?', const=True, default=False)
     parser.add_argument("--semantic_refresh_interval", type=int, default=4)
@@ -287,6 +292,7 @@ def work(QA_CLASS):
                     "vit_output_token_policy": args.vit_output_token_policy,
                     "vit_output_token_budget": args.vit_output_token_budget,
                     "vit_output_coverage_tokens": args.vit_output_coverage_tokens,
+                    "vit_output_selection_space": args.vit_output_selection_space,
                     "enable_vit_layer_sparse": args.enable_vit_layer_sparse,
                     "enable_semantic_stream": args.enable_semantic_stream,
                     "enable_semantic_compute_gate": args.enable_semantic_compute_gate,

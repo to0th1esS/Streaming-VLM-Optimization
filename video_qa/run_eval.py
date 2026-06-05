@@ -25,6 +25,7 @@ def append_semantic_stream_args(cmd, args):
         "--vit_output_token_policy", str(args.vit_output_token_policy),
         "--vit_output_token_budget", str(args.vit_output_token_budget),
         "--vit_output_coverage_tokens", str(args.vit_output_coverage_tokens),
+        "--vit_output_selection_space", str(args.vit_output_selection_space),
         "--enable_semantic_stream", str(args.enable_semantic_stream),
         "--enable_semantic_compute_gate", str(args.enable_semantic_compute_gate),
         "--semantic_refresh_interval", str(args.semantic_refresh_interval),
@@ -307,6 +308,12 @@ if __name__ == "__main__":
     parser.add_argument("--vit_output_token_policy", type=str, default='none', choices=['none', 'uniform', 'coverage_innovation'])
     parser.add_argument("--vit_output_token_budget", type=int, default=196)
     parser.add_argument("--vit_output_coverage_tokens", type=int, default=16)
+    parser.add_argument(
+        "--vit_output_selection_space",
+        type=str,
+        default="projected",
+        choices=["projected", "vit_native"],
+    )
     parser.add_argument("--enable_semantic_stream", type=str, default='false')
     parser.add_argument("--enable_semantic_compute_gate", type=str, default='false')
     parser.add_argument("--semantic_refresh_interval", type=int, default=4)

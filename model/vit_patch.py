@@ -20,6 +20,10 @@ def vit_patch_hf(model, **kwargs):
     model.vit_sparse_encode_chunk_size = kwargs.get("vit_sparse_encode_chunk_size", 1)
     output_postprocess = kwargs.get("vit_output_postprocess")
     output_token_policy = kwargs.get("vit_output_token_policy", "none")
+    model.vit_output_selection_space = kwargs.get(
+        "vit_output_selection_space",
+        "projected",
+    )
     if output_postprocess is not None:
         model.vit_output_postprocess = output_postprocess
     elif output_token_policy != "none":
@@ -114,6 +118,14 @@ def _profile_call(self, stat_key, function):
 
 def _postprocess_vit_output(self, video_features, **kwargs):
     postprocess = getattr(self, "vit_output_postprocess", _identity_vit_output_postprocess)
+    selected_video_feature = kwargs.get("selected_video_feature")
+    if (
+        getattr(self, "vit_output_selection_space", "projected") == "vit_native"
+        and isinstance(postprocess, FixedBudgetTokenReducer)
+        and selected_video_feature is not None
+    ):
+        # 在较低维的 ViT 原生空间判断变化，但仍从原投影输出中取 token，避免改变写入表示。
+        kwargs["selection_features"] = self.apply_pooling(selected_video_feature)
     return postprocess(video_features, **kwargs)
 
 
