@@ -201,6 +201,8 @@ class SemanticStreamPeriodicTest(unittest.TestCase):
 
         self.assertEqual(selected.tolist(), [0])
         self.assertEqual(gate.stats["kept_frames"], 1)
+        self.assertEqual(gate.stats["semantic_reallocated_frames"], 0)
+        self.assertEqual(gate.stats["semantic_pair_rejected_frames"], 2)
 
     def test_paired_semantic_selection_reallocates_for_distinct_event(self):
         gate = SemanticStreamGate(
@@ -227,6 +229,8 @@ class SemanticStreamPeriodicTest(unittest.TestCase):
 
         self.assertEqual(selected.tolist(), [1])
         self.assertEqual(gate.recent_decisions[2]["decision"], "semantic_reallocate")
+        self.assertEqual(gate.stats["semantic_reallocated_frames"], 1)
+        self.assertEqual(gate.stats["semantic_pair_rejected_frames"], 2)
 
     def test_unknown_raw_proposal_policy_fails(self):
         gate = SemanticStreamGate(

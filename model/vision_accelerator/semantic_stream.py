@@ -55,6 +55,8 @@ class SemanticStreamGate:
             "recency_kept_frames": 0,
             "coverage_kept_frames": 0,
             "budget_kept_frames": 0,
+            "semantic_reallocated_frames": 0,
+            "semantic_pair_rejected_frames": 0,
             "proposal_sec": 0.0,
             "preprocess_sec": 0.0,
             "embedding_sec": 0.0,
@@ -127,6 +129,10 @@ class SemanticStreamGate:
                 self.stats["coverage_kept_frames"] += 1
             if decision == "budget_keep":
                 self.stats["budget_kept_frames"] += 1
+            if decision == "semantic_reallocate":
+                self.stats["semantic_reallocated_frames"] += 1
+        elif decision == "pair_reject":
+            self.stats["semantic_pair_rejected_frames"] += 1
         else:
             self.stats["skipped_frames"] += 1
         self.recent_decisions.append(

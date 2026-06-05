@@ -210,6 +210,14 @@ class ReKVStreamVQA(BaseVQA):
                 'semantic_recency_kept_frames': semantic_stats.get("recency_kept_frames", 0),
                 'semantic_coverage_kept_frames': semantic_stats.get("coverage_kept_frames", 0),
                 'semantic_budget_kept_frames': semantic_stats.get("budget_kept_frames", 0),
+                'semantic_reallocated_frames': semantic_stats.get(
+                    "semantic_reallocated_frames",
+                    0,
+                ),
+                'semantic_pair_rejected_frames': semantic_stats.get(
+                    "semantic_pair_rejected_frames",
+                    0,
+                ),
                 'semantic_input_tokens': semantic_stats.get("input_tokens", 0),
                 'semantic_written_tokens': semantic_stats.get("written_tokens", 0),
                 'semantic_raw_signature_mode': getattr(
