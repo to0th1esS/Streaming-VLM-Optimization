@@ -2,6 +2,7 @@ import argparse
 import json
 from collections import Counter
 from pathlib import Path
+from statistics import median
 
 
 TASK_GROUPS = {
@@ -117,16 +118,80 @@ def make_row(item, chunked_dir, query_index=None):
     }
 
 
+def item_end_time(item):
+    if TASK_GROUPS[item["task"]] != "forward":
+        return float(item["realtime"])
+    return max(
+        (float(query["realtime"]) for query in item.get("test_info", [])),
+        default=0.0,
+    )
+
+
+def evenly_spaced_indices(length, limit):
+    if limit <= 0 or limit >= length:
+        return list(range(length))
+    if limit == 1:
+        return [length // 2]
+    return [
+        round(index * (length - 1) / (limit - 1))
+        for index in range(limit)
+    ]
+
+
+def select_source_items(items, limit, policy):
+    if limit <= 0 or limit >= len(items):
+        return list(items)
+    if policy == "head":
+        return list(items[:limit])
+    if policy == "duration_stratified":
+        ranked = sorted(items, key=lambda item: (item_end_time(item), int(item["id"])))
+        return [ranked[index] for index in evenly_spaced_indices(len(ranked), limit)]
+    raise ValueError(f"Unsupported source selection policy: {policy}")
+
+
+def select_query_indices(queries, limit, policy):
+    if limit <= 0 or limit >= len(queries):
+        return list(range(len(queries)))
+    if policy == "head":
+        return list(range(limit))
+    if policy == "time_stratified":
+        ranked = sorted(
+            range(len(queries)),
+            key=lambda index: (float(queries[index]["realtime"]), index),
+        )
+        return [ranked[index] for index in evenly_spaced_indices(len(ranked), limit)]
+    raise ValueError(f"Unsupported query selection policy: {policy}")
+
+
 def convert_annotations(
     annotations,
     chunked_dir,
     tasks,
     max_source_items_per_task=0,
     max_queries_per_source=0,
+    source_selection="head",
+    query_selection="head",
 ):
     selected_tasks = set(tasks)
     source_counts = Counter()
     rows = []
+    items_by_task = {
+        task: [
+            item
+            for item in annotations
+            if item.get("task") == task
+        ]
+        for task in tasks
+    }
+    selected_ids = {
+        int(item["id"])
+        for task, items in items_by_task.items()
+        for item in select_source_items(
+            items,
+            max_source_items_per_task,
+            source_selection,
+        )
+    }
 
     for item in annotations:
         task = item.get("task")
@@ -134,10 +199,7 @@ def convert_annotations(
             continue
         if task not in TASK_GROUPS:
             raise ValueError(f"Unknown OVO-Bench task: {task}")
-        if (
-            max_source_items_per_task > 0
-            and source_counts[task] >= max_source_items_per_task
-        ):
+        if int(item["id"]) not in selected_ids:
             continue
 
         source_counts[task] += 1
@@ -146,9 +208,12 @@ def convert_annotations(
             continue
 
         queries = item.get("test_info", [])
-        if max_queries_per_source > 0:
-            queries = queries[:max_queries_per_source]
-        for query_index in range(len(queries)):
+        query_indices = select_query_indices(
+            queries,
+            max_queries_per_source,
+            query_selection,
+        )
+        for query_index in query_indices:
             rows.append(make_row(item, chunked_dir, query_index=query_index))
 
     return rows, source_counts
@@ -157,6 +222,12 @@ def convert_annotations(
 def summarize(rows, source_counts):
     task_queries = Counter(row["benchmark_task"] for row in rows)
     group_queries = Counter(row["benchmark_group"] for row in rows)
+    times_by_task = {}
+    for row in rows:
+        task = row["benchmark_task"]
+        times_by_task.setdefault(task, []).append(
+            float(row["conversations"][0]["end_time"])
+        )
     missing_paths = [
         row["video_path"] for row in rows if not Path(row["video_path"]).exists()
     ]
@@ -166,6 +237,14 @@ def summarize(rows, source_counts):
         "source_items_by_task": dict(sorted(source_counts.items())),
         "queries_by_task": dict(sorted(task_queries.items())),
         "queries_by_group": dict(sorted(group_queries.items())),
+        "query_time_by_task": {
+            task: {
+                "min": min(times),
+                "median": median(times),
+                "max": max(times),
+            }
+            for task, times in sorted(times_by_task.items())
+        },
         "available_video_files": len(rows) - len(missing_paths),
         "missing_video_files": len(missing_paths),
         "missing_video_examples": missing_paths[:20],
@@ -197,6 +276,16 @@ def parse_args():
     parser.add_argument("--max-source-items-per-task", type=int, default=2)
     parser.add_argument("--max-queries-per-source", type=int, default=2)
     parser.add_argument(
+        "--source-selection",
+        choices=("head", "duration_stratified"),
+        default="head",
+    )
+    parser.add_argument(
+        "--query-selection",
+        choices=("head", "time_stratified"),
+        default="head",
+    )
+    parser.add_argument(
         "--require-videos",
         action="store_true",
         help="Fail if any converted chunked video is absent.",
@@ -213,6 +302,8 @@ def main():
         tasks=args.tasks,
         max_source_items_per_task=args.max_source_items_per_task,
         max_queries_per_source=args.max_queries_per_source,
+        source_selection=args.source_selection,
+        query_selection=args.query_selection,
     )
     summary = summarize(rows, source_counts)
     summary.update(
@@ -220,6 +311,8 @@ def main():
             "source_json": str(args.source_json).replace("\\", "/"),
             "output_json": str(args.output_json).replace("\\", "/"),
             "chunked_dir": str(args.chunked_dir).replace("\\", "/"),
+            "source_selection": args.source_selection,
+            "query_selection": args.query_selection,
         }
     )
     if args.require_videos and summary["missing_video_files"]:

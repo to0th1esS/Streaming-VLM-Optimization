@@ -15,6 +15,8 @@ OUT_ROOT="${OUT_ROOT:-results/ovo_bench/validation}"
 TASKS="${TASKS:-EPM,ASI,HLD,OCR,ACR,ATR,STU,FPD,OJR,REC,SSR,CRR}"
 MAX_SOURCE_ITEMS_PER_TASK="${MAX_SOURCE_ITEMS_PER_TASK:-2}"
 MAX_QUERIES_PER_SOURCE="${MAX_QUERIES_PER_SOURCE:-2}"
+SOURCE_SELECTION="${SOURCE_SELECTION:-head}"
+QUERY_SELECTION="${QUERY_SELECTION:-head}"
 BUDGET_WINDOW="${BUDGET_WINDOW:-96}"
 RECENCY_KEEP="${RECENCY_KEEP:-4}"
 CANDIDATE_MULTIPLIER="${CANDIDATE_MULTIPLIER:-2}"
@@ -30,6 +32,8 @@ prepare_subset() {
     --tasks "$TASKS" \
     --max-source-items-per-task "$MAX_SOURCE_ITEMS_PER_TASK" \
     --max-queries-per-source "$MAX_QUERIES_PER_SOURCE" \
+    --source-selection "$SOURCE_SELECTION" \
+    --query-selection "$QUERY_SELECTION" \
     --require-videos
 }
 
@@ -81,7 +85,7 @@ main() {
     --semantic_raw_grid_size "$RAW_GRID_SIZE" \
     --semantic_profile_breakdown "$PROFILE_BREAKDOWN"
 
-  run_method hybrid_cm2 \
+  run_method "hybrid_cm${CANDIDATE_MULTIPLIER}" \
     --enable_vit_sparse true \
     --enable_vit_layer_sparse false \
     --enable_semantic_stream true \

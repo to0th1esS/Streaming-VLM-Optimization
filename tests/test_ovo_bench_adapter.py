@@ -4,7 +4,12 @@ import unittest
 from pathlib import Path
 
 from scripts.evaluate_ovo_bench import evaluate_rows, summarize
-from scripts.prepare_ovo_bench_subset import convert_annotations
+from scripts.prepare_ovo_bench_subset import (
+    convert_annotations,
+    evenly_spaced_indices,
+    select_query_indices,
+    select_source_items,
+)
 from scripts.summarize_ovo_bench_validation import summarize as summarize_validation
 
 
@@ -76,6 +81,66 @@ class OVOBenchAdapterTest(unittest.TestCase):
         )
         self.assertEqual(len(rows), 2)
         self.assertEqual([row["query_index"] for row in rows], [0, 1])
+
+    def test_duration_stratified_source_selection_covers_range(self):
+        items = [
+            {
+                "id": index,
+                "task": "EPM",
+                "realtime": duration,
+            }
+            for index, duration in enumerate((80, 10, 60, 30, 50, 20), start=1)
+        ]
+
+        selected = select_source_items(items, 3, "duration_stratified")
+
+        self.assertEqual(
+            [item["realtime"] for item in selected],
+            [10, 30, 80],
+        )
+
+    def test_time_stratified_query_selection_keeps_early_and_late_queries(self):
+        queries = [
+            {"realtime": value}
+            for value in (50, 10, 40, 20, 30)
+        ]
+
+        selected = select_query_indices(queries, 3, "time_stratified")
+
+        self.assertEqual(selected, [1, 4, 0])
+        self.assertEqual(evenly_spaced_indices(5, 3), [0, 2, 4])
+
+    def test_stratified_conversion_preserves_original_query_indices(self):
+        annotation = {
+            "id": 5,
+            "task": "REC",
+            "video": "source/e.mp4",
+            "activity": "turning",
+            "test_info": [
+                {"realtime": value, "count": index}
+                for index, value in enumerate((50, 10, 40, 20, 30))
+            ],
+        }
+
+        rows, _ = convert_annotations(
+            [annotation],
+            chunked_dir="/data/chunks",
+            tasks=["REC"],
+            max_source_items_per_task=1,
+            max_queries_per_source=3,
+            source_selection="duration_stratified",
+            query_selection="time_stratified",
+        )
+
+        self.assertEqual([row["query_index"] for row in rows], [1, 4, 0])
+        self.assertEqual(
+            [row["video_path"] for row in rows],
+            [
+                "/data/chunks/5_1.mp4",
+                "/data/chunks/5_4.mp4",
+                "/data/chunks/5_0.mp4",
+            ],
+        )
 
     def test_official_and_strict_scores_are_reported(self):
         rows = [
