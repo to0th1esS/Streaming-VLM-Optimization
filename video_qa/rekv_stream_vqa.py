@@ -159,7 +159,14 @@ class ReKVStreamVQA(BaseVQA):
                 encode_video_sec = time.perf_counter() - encode_start
                 cumulative_encode_video_sec += encode_video_sec
                 video_start_idx = encode_end_idx
-        
+
+            # 在 QA 解码前读取视频 KV cache（键值缓存）；解码过程可能释放或替换主缓存。
+            kv_cache_memory_bytes = (
+                int(self.qa_model.calc_memory_usage())
+                if self.qa_model.kv_cache is not None
+                else 0
+            )
+
             # OpenQA
             self._sync_cuda()
             qa_start = time.perf_counter()
@@ -285,12 +292,7 @@ class ReKVStreamVQA(BaseVQA):
                     "innovation_tokens",
                     0,
                 ),
-                # 直接记录当前视频写入后的 KV cache（键值缓存）占用，避免只用 token 数量间接推断。
-                'kv_cache_memory_bytes': (
-                    int(self.qa_model.calc_memory_usage())
-                    if self.qa_model.kv_cache is not None
-                    else 0
-                ),
+                'kv_cache_memory_bytes': kv_cache_memory_bytes,
             })
  
 
