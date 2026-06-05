@@ -63,6 +63,12 @@ class SemanticStreamGate:
             "verification_sec": 0.0,
             "vit_encoder_sec": 0.0,
             "context_write_sec": 0.0,
+            "vit_dense_frames": 0,
+            "vit_sparse_frames": 0,
+            "vit_dense_sec": 0.0,
+            "vit_sparse_sec": 0.0,
+            "vit_total_patch_tokens": 0,
+            "vit_updated_patch_tokens": 0,
         }
         self.recent_decisions = []
 

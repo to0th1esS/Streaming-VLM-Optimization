@@ -144,6 +144,14 @@ def summarize(evaluated):
         float(row.get("semantic_written_tokens", 0) or 0)
         for row in final_by_video.values()
     )
+    total_patch_tokens = sum(
+        int(float(row.get("vit_total_patch_tokens", 0) or 0))
+        for row in final_by_video.values()
+    )
+    updated_patch_tokens = sum(
+        int(float(row.get("vit_updated_patch_tokens", 0) or 0))
+        for row in final_by_video.values()
+    )
 
     return {
         "samples": len(evaluated),
@@ -191,6 +199,31 @@ def summarize(evaluated):
                 "vit_encoder",
                 "context_write",
             )
+        },
+        "vit_layer_sparse": {
+            "dense_frames": sum(
+                int(float(row.get("vit_dense_frames", 0) or 0))
+                for row in final_by_video.values()
+            ),
+            "sparse_frames": sum(
+                int(float(row.get("vit_sparse_frames", 0) or 0))
+                for row in final_by_video.values()
+            ),
+            "dense_sec": sum(
+                float(row.get("vit_dense_sec", 0) or 0)
+                for row in final_by_video.values()
+            ),
+            "sparse_sec": sum(
+                float(row.get("vit_sparse_sec", 0) or 0)
+                for row in final_by_video.values()
+            ),
+            "total_patch_tokens": total_patch_tokens,
+            "updated_patch_tokens": updated_patch_tokens,
+            "planned_update_ratio": (
+                updated_patch_tokens / total_patch_tokens
+                if total_patch_tokens
+                else 0.0
+            ),
         },
     }
 

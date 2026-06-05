@@ -19,6 +19,10 @@ class Abstract_ReKV:
         semantic_gate = getattr(self, "semantic_stream_gate", None)
         if semantic_gate is not None:
             semantic_gate.reset()
+        inference_context = getattr(self, "inference_context", None)
+        if inference_context is not None and hasattr(inference_context, "reset"):
+            # 语言缓存和视觉参考必须在同一视频边界同时失效。
+            inference_context.reset()
         torch.cuda.empty_cache()
         torch.cuda.ipc_collect()
 

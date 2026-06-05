@@ -251,6 +251,18 @@ class ReKVStreamVQA(BaseVQA):
                 'semantic_verification_sec': semantic_stats.get("verification_sec", 0.0),
                 'semantic_vit_encoder_sec': semantic_stats.get("vit_encoder_sec", 0.0),
                 'semantic_context_write_sec': semantic_stats.get("context_write_sec", 0.0),
+                'vit_dense_frames': semantic_stats.get("vit_dense_frames", 0),
+                'vit_sparse_frames': semantic_stats.get("vit_sparse_frames", 0),
+                'vit_dense_sec': semantic_stats.get("vit_dense_sec", 0.0),
+                'vit_sparse_sec': semantic_stats.get("vit_sparse_sec", 0.0),
+                'vit_total_patch_tokens': semantic_stats.get(
+                    "vit_total_patch_tokens",
+                    0,
+                ),
+                'vit_updated_patch_tokens': semantic_stats.get(
+                    "vit_updated_patch_tokens",
+                    0,
+                ),
             })
  
 

@@ -21,6 +21,9 @@ class InferenceContext:
         self.update_token_ratio :float = update_token_ratio
         self.cache_interval :int = cache_interval
         self.is_reference_chunk :bool = False
+        self.processed_units: int = 0
+        self.dense_units: int = 0
+        self.sparse_units: int = 0
 
     def update(self, chunk_idx: int):
         """
@@ -28,3 +31,20 @@ class InferenceContext:
         """
         self.chunk_idx = chunk_idx
         self.is_reference_chunk = (chunk_idx % self.cache_interval == 0)
+
+    def step(self):
+        """按真实流式顺序推进一个视觉单元，跨多次增量调用保持连续编号。"""
+        self.update(self.processed_units)
+        self.processed_units += 1
+        if self.is_reference_chunk:
+            self.dense_units += 1
+        else:
+            self.sparse_units += 1
+
+    def reset(self):
+        """开始新视频时清空执行位置和统计，首个视觉单元重新作为参考。"""
+        self.chunk_idx = 0
+        self.is_reference_chunk = False
+        self.processed_units = 0
+        self.dense_units = 0
+        self.sparse_units = 0

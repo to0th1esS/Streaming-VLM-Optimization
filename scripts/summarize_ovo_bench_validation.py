@@ -51,6 +51,8 @@ def summarize(root, methods):
         }
         for stage, seconds in metrics.get("semantic_timing_sec", {}).items():
             row[f"{stage}_sec"] = float(seconds)
+        for key, value in metrics.get("vit_layer_sparse", {}).items():
+            row[f"vit_{key}"] = value
         for group in ("backward", "realtime", "forward"):
             group_metrics = metrics.get("per_group", {}).get(group, {})
             row[f"{group}_official_accuracy"] = float(

@@ -149,6 +149,62 @@ def _get_video_features_from_embeddings(self, embeddings, batch_size, frames):
     return video_features.reshape(batch_size, frames * video_features.shape[1], -1)
 
 
+def _get_video_features_from_embeddings_streaming(self, embeddings):
+    frame_features = []
+    token_count = int(embeddings.shape[1])
+    update_ratio = float(self.inference_context.update_token_ratio)
+    semantic_stats = self.semantic_stream_gate.stats
+
+    for frame_embedding in embeddings.split(1, dim=0):
+        self.inference_context.step()
+        is_reference = self.inference_context.is_reference_chunk
+        if torch.cuda.is_available() and getattr(
+            self,
+            "semantic_profile_breakdown",
+            False,
+        ):
+            torch.cuda.synchronize()
+        start = time.perf_counter()
+        encoder_outputs = self.vision_tower.vision_model.encoder(
+            inputs_embeds=frame_embedding,
+            output_hidden_states=True,
+        )
+        if torch.cuda.is_available() and getattr(
+            self,
+            "semantic_profile_breakdown",
+            False,
+        ):
+            torch.cuda.synchronize()
+        elapsed = time.perf_counter() - start
+
+        semantic_stats["vit_total_patch_tokens"] += token_count
+        if is_reference:
+            semantic_stats["vit_dense_frames"] += 1
+            semantic_stats["vit_dense_sec"] += elapsed
+            semantic_stats["vit_updated_patch_tokens"] += token_count
+        else:
+            # 该值表示算法计划更新的 token 数，不等同于融合算子后的实际 FLOPs。
+            updated_tokens = max(1, int(token_count * update_ratio))
+            semantic_stats["vit_sparse_frames"] += 1
+            semantic_stats["vit_sparse_sec"] += elapsed
+            semantic_stats["vit_updated_patch_tokens"] += updated_tokens
+
+        selected_video_feature = encoder_outputs.hidden_states[
+            self.config.vision_feature_layer
+        ]
+        if self.config.vision_feature_select_strategy == "default":
+            selected_video_feature = selected_video_feature[:, 1:]
+        elif self.config.vision_feature_select_strategy == "full":
+            selected_video_feature = selected_video_feature
+
+        projected = self.multi_modal_projector(selected_video_feature)
+        frame_features.append(self.apply_pooling(projected))
+
+    if not frame_features:
+        return embeddings.new_empty((1, 0, 0))
+    return torch.cat(frame_features, dim=1)
+
+
 def _encode_video_chunk_with_semantic_compute_gate(self, video_chunk):
     pixel_values_videos = self.processor.video_processor(
         video_chunk,
@@ -334,15 +390,23 @@ def _encode_video_window_with_semantic_compute_gate(self, video):
         if keep_indices.numel() == 0:
             return
         kept_embeddings = embeddings.index_select(0, keep_indices)
-    video_features = _profile_call(
-        self,
-        "vit_encoder_sec",
-        lambda: _get_video_features_from_embeddings(
+    if getattr(self, "enable_vit_layer_sparse", False):
+        # 层内缓存只描述单帧参考，必须按时间顺序逐帧推进，不能批量混合多个帧。
+        encode_kept_embeddings = lambda: _get_video_features_from_embeddings_streaming(
+            self,
+            kept_embeddings,
+        )
+    else:
+        encode_kept_embeddings = lambda: _get_video_features_from_embeddings(
             self,
             kept_embeddings,
             batch_size=batch_size,
             frames=int(keep_indices.numel()),
-        ),
+        )
+    video_features = _profile_call(
+        self,
+        "vit_encoder_sec",
+        encode_kept_embeddings,
     )
     if video_features.shape[1] == 0:
         return
@@ -563,7 +627,7 @@ def _new_encode_video(self, video, encode_chunk_size=None):
     num_chunks = num_frames // encode_chunk_size
 
     for chunk_idx in range(num_chunks):
-        self.inference_context.update(chunk_idx)
+        self.inference_context.step()
         start_idx = chunk_idx * encode_chunk_size
         end_idx = start_idx + encode_chunk_size
         chunk_video = video[start_idx:end_idx]
@@ -574,7 +638,7 @@ def _new_encode_video(self, video, encode_chunk_size=None):
 
     remaining_frames = num_frames % encode_chunk_size
     if remaining_frames > 0:
-        self.inference_context.update(num_chunks)
+        self.inference_context.step()
         start_idx = num_chunks * encode_chunk_size
         end_idx = start_idx + remaining_frames
         remaining_video = video[start_idx:end_idx]
