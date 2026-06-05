@@ -1855,3 +1855,279 @@ fixed semantic slot budget（固定语义槽位预算）
 3. 测量 attention / MLP / gather-scatter / context write 的真实时间分解；
 4. 在 7B 和更大模型上复验端到端速度；
 5. 保持 video-disjoint v2 作为当前最小可信泛化集，并继续扩展更难流式 benchmark（基准）。
+
+## 14. 从层内不规则稀疏到固定语义带宽：计算、写入与缓存的联合边界
+
+### 14.1 本轮实验目的
+
+本轮不再把 feature cosine / MSE（特征余弦相似度 / 均方误差）作为主要淘汰标准，而是回答三个端到端问题：
+
+1. 已保留帧内部的 ViT layer sparse update（ViT 层内稀疏更新）能否带来真实 GPU 加速；
+2. 在 QA 基本不下降的约束下，减少每帧写入视觉 token 是否能降低 ReKV cache（检索式键值缓存）；
+3. token 选择开销与 context write（上下文写入）收益能否形成端到端正收益。
+
+统一设置：
+
+- 模型：LLaVA-OneVision-Qwen2-7B；
+- 数据：OVO-Bench 12 任务小规模边界集，每个任务一个中等时长样本；
+- 输入：1 FPS；
+- 帧级方法：stable saliency z=4.0（稳定显著性），96 帧窗口，每窗口 1 个预算槽，末端保留 4 帧；
+- query-independent（查询无关），不使用问题指导视觉计算或存储；
+- 正式计时前在同一进程加入一个短视频 warm-up（预热）样本，结果中排除该样本。
+
+### 14.2 ViT 层内 token 稀疏更新复验
+
+首先修复旧实现的流式状态问题：显著性路径原来会批量编码所有保留帧，没有逐帧推进 `InferenceContext`，因此后续帧可能缺少正确参考缓存。本轮改为：
+
+```text
+保留帧按时间顺序逐帧进入 ViT
+-> reference frame（参考帧）完整计算
+-> intermediate frame（中间帧）按 token 比例更新
+-> 记录 dense / sparse 帧数、计划更新 token 数和分阶段时延
+```
+
+12 样本结果：
+
+| 方法 | official QA | encode time | ViT encoder | 说明 |
+|---|---:|---:|---:|---|
+| batch dense（批量密集） | 61.11% | 4.255s | 0.636s | 吞吐上界，不是公平顺序对照 |
+| sequential dense（逐帧密集） | 61.11% | 4.684s | 1.081s | 公平顺序对照 |
+| sparse i=2, r=0.25 | 61.11% | 5.353s | 1.432s | 计划更新 65.16% token |
+| sparse i=4, r=0.25 | 61.11% | 5.246s | 1.431s | 计划更新 47.30% token |
+| sparse i=4, r=0.50 | 61.11% | 5.271s | 1.534s | 更高更新比例 |
+
+相对公平的逐帧密集对照：
+
+- `i=2, r=0.25` 端到端慢 14.3%；
+- `i=4, r=0.25` 端到端慢 12.0%；
+- `i=4, r=0.50` 端到端慢 12.5%；
+- `i=4, r=0.25` 的 ViT encoder 本身慢 32.4%。
+
+结论：
+
+```text
+当前 gather/scatter（收集/写回）式不规则 token 稀疏
+虽然减少了计划计算 token 数，却没有减少真实 GPU 时间。
+该结果不是“帧间冗余不存在”，而是“不规则稀疏没有映射成硬件友好的算子”。
+```
+
+因此旧层内稀疏路径保留为研究入口，不再作为当前主方法扩展。
+
+### 14.3 端到端瓶颈重新定位
+
+在 video-disjoint 180 样本 stable saliency z=4.0 结果上汇总：
+
+| 分量 | 时间 | 总编码占比 |
+|---|---:|---:|
+| raw proposal（原始帧提议） | 1.050s | 1.5% |
+| preprocess（预处理） | 18.396s | 27.1% |
+| embedding（嵌入） | 0.423s | 0.6% |
+| verification（验证） | 0.441s | 0.6% |
+| ViT encoder（视觉编码器） | 10.252s | 15.1% |
+| context write（上下文写入） | 35.239s | **51.9%** |
+
+保留 1388 / 56256 帧。由此可得：
+
+1. 帧级选择已经将 ViT 占比压到 15.1%；
+2. 即使 ViT 再理想减少 50%，端到端理论收益也只有约 7.5%；
+3. 当前更主要的瓶颈已经转移到视觉 token 写入语言模型和 KV cache。
+
+这验证了研究目标必须从“只加速 ViT”扩展为：
+
+```text
+Dense visual stream（密集视觉流）
+-> sparse frame stream（稀疏帧流）
+-> fixed-bandwidth semantic token stream（固定带宽语义 token 流）
+```
+
+### 14.4 固定预算视觉 token 压缩
+
+新增 `FixedBudgetTokenReducer`（固定预算 token 缩减器），每个保留帧固定输出相同数量 token，以保持 ReKV 块对齐。
+
+第一版策略：
+
+- `coverage tokens`（覆盖 token）：均匀覆盖空间位置；
+- `innovation tokens`（变化 token）：按相对上一保留帧的 token 余弦漂移选取；
+- 默认 25% 预算用于覆盖，75% 用于变化；
+- 第一帧只做均匀覆盖；
+- 完全 query-independent（查询无关）。
+
+扫描 96 / 128 / 160 token 后，128 token 是当前最稳定边界：
+
+| 方法 | token reduction | official QA | encode | context write |
+|---|---:|---:|---:|---:|
+| none-196（不压缩） | 0% | 55.56% | 4.281s | 2.064s |
+| innovation-96 | 51.02% | 55.56% | 4.648s | 2.093s |
+| innovation-128 | **34.69%** | 55.56% | 4.300s | **1.993s** |
+| innovation-160 | 18.37% | 61.11% | 4.578s | 2.188s |
+
+128 token 与同轮 196 token 的逐样本 QA 判定一致，仅 REC 任务出现 `1` 与 `One` 的答案格式差异，二者官方分数都为 0。
+
+160 token 在一个样本上变好，但 12 样本规模不足以把该变化解释为方法收益。
+
+### 14.5 KV cache 实际存储验证
+
+旧 `calc_memory_usage()` 只统计已经 offload（卸载）到 CPU 的历史块。当前短视频未超过 `n_local`，因此原指标恒为 0，不能代表实际缓存。
+
+本轮新增缓存观测，分别统计：
+
+- GPU local KV（局部键值缓存）；
+- GPU global remainder（全局剩余缓存）；
+- GPU preallocated retrieval buffers（预分配检索缓冲区）；
+- CPU offloaded blocks（已卸载块）；
+- logical cache tokens（逻辑缓存 token 数）。
+
+独立复验：
+
+| 方法 | official QA | mean cache | max cache | mean logical tokens | context write | total encode |
+|---|---:|---:|---:|---:|---:|---:|
+| none-196 | 55.56% | 2.321 GB | 2.433 GB | 1385 | 2.168s | 4.325s |
+| innovation-128 | 55.56% | **1.517 GB** | **1.591 GB** | 909 | **2.041s** | 4.407s |
+
+定量结论：
+
+```text
+平均 KV cache 减少：34.61%
+峰值 KV cache 减少：34.61%
+逻辑视觉 token 减少：34.37%
+context write 加速：5.82%
+端到端编码：慢 1.89%
+QA：同轮不下降
+```
+
+因此当前可以正式宣称：
+
+> 固定 128 token 的语义带宽在小规模 OVO-Bench 上保持 QA，不仅减少逻辑 token，还将实际 ReKV 缓存降低 34.61%，并降低上下文写入时间。
+
+当前不能宣称：
+
+> 已获得稳定端到端加速。
+
+### 14.6 选择开销定位
+
+为定位 128 token 端到端仍未加速的原因，进行了三类对照。
+
+#### A. ViT native selection（ViT 原生空间选择）
+
+将变化评分从 3584 维投影空间移到 1152 维 ViT 原生空间，但为了对齐 196 个输出位置，需要额外空间池化。
+
+结果：
+
+- QA 与投影空间完全一致；
+- ViT 阶段反而慢约 3.1%；
+- 端到端差异约 0.23%，属于噪声范围。
+
+结论：额外池化抵消了低维相似度收益，该路径不进入主方法。
+
+#### B. low-dimensional temporal sketch（低维时间变化草图）
+
+不新增池化，直接从 3584 维投影 token 中均匀抽取 64 / 128 个通道计算漂移。
+
+64 维草图将选择相关的额外 ViT 时间从约 0.132s 降到约 0.107s，但仍不能完全消除 `top-k + gather` 开销。
+
+#### C. uniform-128（均匀 128 token）控制
+
+该方法不做相似度和 top-k，仅保留均匀空间位置，用于测量索引和写回的最低成本。
+
+同轮结果：
+
+| 方法 | official QA | ViT encoder | context write | total encode | cache reduction |
+|---|---:|---:|---:|---:|---:|
+| none-196 | 55.56% | 0.733s | 2.063s | 4.377s | 0% |
+| uniform-128 | 61.11% | 0.791s | 2.023s | 4.375s | 34.69% |
+| sketch64-128 | 61.11% | 0.784s | 2.041s | 4.245s | 34.69% |
+
+不能直接把 sketch64 的单次 3.0% 总时间下降当作算法加速，因为分解显示主要差异来自 proposal / preprocess 波动：
+
+- none-196：proposal + preprocess = 1.472s；
+- sketch64-128：proposal + preprocess = 1.329s；
+- 与 token 选择无关。
+
+真正受方法影响的 ViT 阶段仍慢约 7%，context write 只快约 1%--2%。
+
+### 14.7 当前方向性结论
+
+本轮形成三个可用于论文方法设计的 insight（研究洞察）：
+
+#### Insight 1：冗余必须转化为结构化计算
+
+逐 token 不规则 gather/scatter 在 A100 上不能自动转化为速度。层内稀疏和输出 top-k 都重复证明：
+
+```text
+理论 FLOPs 减少 != 实际 GPU latency 减少
+```
+
+最终方法需要 block-structured sparsity（块结构稀疏）、规则张量形状或专用 kernel（内核），不能依赖 Python/PyTorch 级不规则索引。
+
+#### Insight 2：时间稀疏与语义带宽应联合设计
+
+帧级 stable saliency 决定“何时写入”，固定 token 预算决定“每次写入多少”。两者共同将密集视觉流转为受控语义流，并已经得到实际缓存证据。
+
+#### Insight 3：QA 约束允许明显偏离 dense feature
+
+128 token 减少 34.69% 的视觉写入和缓存，同轮 QA 没有下降。这支持新的目标函数：
+
+```text
+maximize streaming efficiency（最大化流式效率）
+subject to QA degradation <= epsilon（QA 退化不超过容忍阈值）
+```
+
+而不是逐帧还原 dense ViT 特征。
+
+### 14.8 下一步研究计划
+
+下一轮不继续堆叠帧级阈值，重点转向硬件友好的 structured semantic bandwidth（结构化语义带宽）：
+
+1. 用规则空间块或规则池化替代逐 token top-k，验证能否同时减少投影、写入和缓存；
+2. 保持固定输出块大小，使 ReKV 无需处理 ragged shape（不规则形状）；
+3. 在更难、更长的 OVO-Bench / StreamingBench 子集上比较：
+   - none-196；
+   - uniform / structured pooling（均匀或结构化池化）；
+   - semantic block allocation（语义块分配）；
+4. 至少 3 次重复计时，报告 median（中位数）和标准差；
+5. QA 以 official accuracy（官方准确率）为主，feature cosine 只作为诊断指标；
+6. 长视频必须实际触发 CPU offload，分别验证 GPU 峰值、CPU cache 和端到端检索时延。
+
+当前主线可概括为：
+
+```text
+Anchor-preserved temporal saliency
+（锚点保持的时间显著性）
+        +
+Fixed semantic bandwidth
+（固定语义带宽）
+        +
+Hardware-aligned structured compression
+（硬件对齐的结构化压缩）
+```
+
+前两部分已有 QA 与缓存证据，第三部分是下一轮获得稳定速度收益的核心。
+
+### 14.9 远端复现注意事项
+
+本轮确认服务器存在两个代码目录：
+
+- 当前研究同步目录：`/home/yangjin/1#Streaming-VLM-Optimization`；
+- 历史旧目录：`/home/Streaming-VLM-Optimization`，停留在旧提交并包含大量未提交改动。
+
+后续实验只使用前者，不对历史目录执行 pull、reset 或清理。
+
+正确启动方式：
+
+```bash
+/root/miniconda3/bin/python -m video_qa.rekv_stream_vqa
+```
+
+关键复现参数：
+
+```text
+semantic_refresh_interval=96
+semantic_budget_window_size=96
+semantic_budget_keep_per_window=1
+semantic_recency_keep_frames=4
+semantic_raw_signature_mode=grid_sample_stable
+semantic_raw_proposal_policy=saliency_gated
+semantic_saliency_z_threshold=4.0
+```
+
+其中 `semantic_refresh_interval=4` 属于早期 ViT 默认值，会错误地把长视频近似每 4 帧保留一次，不能用于当前 stable saliency 实验。
