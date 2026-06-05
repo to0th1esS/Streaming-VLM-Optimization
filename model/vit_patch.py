@@ -35,6 +35,9 @@ def vit_patch_hf(model, **kwargs):
                 kwargs.get("vit_output_coverage_tokens", 16)
             ),
             policy=output_token_policy,
+            drift_feature_dims=int(
+                kwargs.get("vit_output_drift_dims", 0)
+            ),
         )
     else:
         model.vit_output_postprocess = _identity_vit_output_postprocess

@@ -293,6 +293,11 @@ class ReKVStreamVQA(BaseVQA):
                     "vit_output_selection_space",
                     "projected",
                 ),
+                'vit_output_drift_dims': getattr(
+                    output_postprocess,
+                    "drift_feature_dims",
+                    0,
+                ),
                 'kv_cache_memory_bytes': kv_cache_memory["total_bytes"],
                 'kv_cache_cpu_memory_bytes': kv_cache_memory["cpu_bytes"],
                 'kv_cache_gpu_memory_bytes': kv_cache_memory["gpu_bytes"],

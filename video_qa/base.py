@@ -208,6 +208,12 @@ def work(QA_CLASS):
     parser.add_argument("--vit_output_token_budget", type=int, default=196)
     parser.add_argument("--vit_output_coverage_tokens", type=int, default=16)
     parser.add_argument(
+        "--vit_output_drift_dims",
+        type=int,
+        default=0,
+        help="用于 token 漂移评分的通道数；0 表示使用完整特征。",
+    )
+    parser.add_argument(
         "--vit_output_selection_space",
         choices=["projected", "vit_native"],
         default="projected",
@@ -292,6 +298,7 @@ def work(QA_CLASS):
                     "vit_output_token_policy": args.vit_output_token_policy,
                     "vit_output_token_budget": args.vit_output_token_budget,
                     "vit_output_coverage_tokens": args.vit_output_coverage_tokens,
+                    "vit_output_drift_dims": args.vit_output_drift_dims,
                     "vit_output_selection_space": args.vit_output_selection_space,
                     "enable_vit_layer_sparse": args.enable_vit_layer_sparse,
                     "enable_semantic_stream": args.enable_semantic_stream,

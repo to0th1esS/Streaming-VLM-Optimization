@@ -10,6 +10,7 @@ class FixedBudgetTokenReducer:
         output_token_budget: int,
         coverage_tokens: int = 16,
         policy: str = "coverage_innovation",
+        drift_feature_dims: int = 0,
     ):
         if output_token_budget < 1:
             raise ValueError("output_token_budget must be >= 1")
@@ -24,6 +25,7 @@ class FixedBudgetTokenReducer:
         self.output_token_budget = output_token_budget
         self.coverage_tokens = coverage_tokens
         self.policy = policy
+        self.drift_feature_dims = max(0, int(drift_feature_dims))
         self.previous_features = None
         self.stats = {}
         self.reset()
@@ -71,9 +73,11 @@ class FixedBudgetTokenReducer:
         if innovation_count == 0:
             return coverage_indices, int(coverage_indices.numel()), 0
 
+        current_drift_features = self._drift_features(frame_features)
+        previous_drift_features = self._drift_features(self.previous_features)
         similarities = F.cosine_similarity(
-            frame_features.float(),
-            self.previous_features.float(),
+            current_drift_features.float(),
+            previous_drift_features.float(),
             dim=-1,
         )
         drift = 1.0 - similarities
@@ -105,6 +109,14 @@ class FixedBudgetTokenReducer:
         return selected, int(coverage_indices.numel()), int(
             selected.numel() - coverage_indices.numel()
         )
+
+    def _drift_features(self, features):
+        feature_dim = int(features.shape[-1])
+        if self.drift_feature_dims <= 0 or self.drift_feature_dims >= feature_dim:
+            return features
+        # 均匀抽取通道形成确定性 temporal sketch（时间变化草图），不引入训练参数。
+        stride = max(1, feature_dim // self.drift_feature_dims)
+        return features[..., ::stride][..., : self.drift_feature_dims]
 
     @torch.inference_mode()
     def __call__(

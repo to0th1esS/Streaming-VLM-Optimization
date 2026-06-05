@@ -81,6 +81,20 @@ class FixedBudgetTokenReducerTest(unittest.TestCase):
 
         self.assertTrue(torch.equal(selected[0, 1], output[0, 2]))
 
+    def test_drift_feature_sketch_uses_requested_dimension(self):
+        reducer = FixedBudgetTokenReducer(
+            output_token_budget=2,
+            coverage_tokens=1,
+            policy="coverage_innovation",
+            drift_feature_dims=2,
+        )
+        features = torch.arange(24, dtype=torch.float32).reshape(1, 4, 6)
+
+        sketch = reducer._drift_features(features)
+
+        self.assertEqual(tuple(sketch.shape), (1, 4, 2))
+        self.assertTrue(torch.equal(sketch, features[..., [0, 3]]))
+
 
 if __name__ == "__main__":
     unittest.main()
