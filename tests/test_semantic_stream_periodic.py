@@ -176,6 +176,36 @@ class SemanticStreamPeriodicTest(unittest.TestCase):
 
         self.assertEqual(selected.tolist(), [0, 4, 6])
 
+    def test_saliency_pair_preserves_first_window_anchor(self):
+        gate = SemanticStreamGate(
+            refresh_interval=1000,
+            selection_policy="budget_topk",
+            budget_window_size=4,
+            budget_keep_per_window=1,
+        )
+        signatures = torch.tensor(
+            [
+                [1.0, 0.0],
+                [1.0, 0.0],
+                [-1.0, 0.0],
+                [-1.0, 0.0],
+                [-1.0, 0.0],
+                [-1.0, 0.0],
+                [1.0, 0.0],
+                [1.0, 0.0],
+            ]
+        )
+
+        selected = _raw_rgb_candidate_indices(
+            signatures,
+            gate,
+            candidate_multiplier=1,
+            proposal_policy="saliency_paired",
+            saliency_z_threshold=1.5,
+        )
+
+        self.assertEqual(selected.tolist(), [0, 4, 6])
+
     def test_paired_semantic_selection_keeps_periodic_for_similar_event(self):
         gate = SemanticStreamGate(
             refresh_interval=1000,

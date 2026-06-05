@@ -474,6 +474,9 @@ def _raw_rgb_candidate_indices(
             if not 0 <= periodic_local_idx < total_frames:
                 continue
             selected.add(periodic_local_idx)
+            if semantic_gate.anchor_feature is None and window_start_global == 0:
+                # 首窗口建立全局参考锚点，不允许事件候选替换初始化覆盖。
+                continue
 
             candidates.sort(reverse=True)
             top_drift, top_local_idx = candidates[0]
