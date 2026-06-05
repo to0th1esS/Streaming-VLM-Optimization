@@ -6,6 +6,7 @@ from model.vit_patch import _raw_rgb_candidate_indices, _raw_rgb_signatures
 from model.vision_accelerator.semantic_stream import SemanticStreamGate
 from scripts.analyze_shallow_vit_candidates import (
     feature_statistics,
+    paired_token_change_statistics,
     window_proposals,
 )
 
@@ -322,6 +323,24 @@ class SemanticStreamPeriodicTest(unittest.TestCase):
         self.assertEqual(tuple(signatures.shape), (2, 2))
         self.assertAlmostEqual(float(dispersion[0]), 0.0, places=6)
         self.assertGreater(float(dispersion[1]), 0.0)
+
+    def test_shallow_probe_paired_token_change_statistics(self):
+        left = torch.tensor(
+            [[1.0, 0.0], [1.0, 0.0], [1.0, 0.0], [1.0, 0.0]]
+        )
+        right = torch.tensor(
+            [[1.0, 0.0], [1.0, 0.0], [1.0, 0.0], [0.0, 1.0]]
+        )
+
+        stats = paired_token_change_statistics(left, right)
+
+        self.assertAlmostEqual(stats["token_cosine_mean"], 0.75, places=6)
+        self.assertAlmostEqual(stats["token_cosine_min"], 0.0, places=6)
+        self.assertAlmostEqual(
+            stats["token_change_fraction_0p90"],
+            0.25,
+            places=6,
+        )
 
 
 if __name__ == "__main__":

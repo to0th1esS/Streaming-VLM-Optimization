@@ -147,6 +147,33 @@ def feature_statistics(features):
     return global_signature, spatial_dispersion
 
 
+def paired_token_change_statistics(left_features, right_features):
+    token_cosines = F.cosine_similarity(
+        left_features.float(),
+        right_features.float(),
+        dim=-1,
+    )
+    sorted_cosines = torch.sort(token_cosines).values
+    bottom_count = max(1, math.ceil(sorted_cosines.numel() * 0.1))
+    # 低分位和变化比例用于区分局部 token 创新与全局场景切换。
+    return {
+        "token_cosine_mean": float(token_cosines.mean().item()),
+        "token_cosine_min": float(token_cosines.min().item()),
+        "token_cosine_bottom10_mean": float(
+            sorted_cosines[:bottom_count].mean().item()
+        ),
+        "token_change_fraction_0p90": float(
+            (token_cosines < 0.90).float().mean().item()
+        ),
+        "token_change_fraction_0p95": float(
+            (token_cosines < 0.95).float().mean().item()
+        ),
+        "token_change_fraction_0p99": float(
+            (token_cosines < 0.99).float().mean().item()
+        ),
+    }
+
+
 @torch.inference_mode()
 def extract_layer_features(model, processor, frames, layers):
     pixel_values = processor.video_processor(
@@ -245,7 +272,8 @@ def analyze_video(
         previous_position = index_to_position[max(0, novelty_index - 1)]
         next_position = index_to_position[min(len(frames) - 1, novelty_index + 1)]
         for depth in layers:
-            signatures, dispersion = feature_statistics(layer_outputs[depth])
+            depth_features = layer_outputs[depth]
+            signatures, dispersion = feature_statistics(depth_features)
             previous_similarity = cosine_value(
                 signatures,
                 novelty_position,
@@ -255,6 +283,10 @@ def analyze_video(
                 signatures,
                 novelty_position,
                 next_position,
+            )
+            token_change = paired_token_change_statistics(
+                depth_features[periodic_position],
+                depth_features[novelty_position],
             )
             row.update(
                 {
@@ -277,6 +309,10 @@ def analyze_video(
                     f"layer{depth}_novelty_spatial_dispersion": float(
                         dispersion[novelty_position].item()
                     ),
+                    **{
+                        f"layer{depth}_periodic_novelty_{key}": value
+                        for key, value in token_change.items()
+                    },
                 }
             )
         rows.append(row)
