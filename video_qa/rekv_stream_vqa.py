@@ -2,6 +2,7 @@ import torch
 import numpy as np
 import time
 import json
+import math
 from pathlib import Path
 from logzero import logger
 from decord import VideoReader, cpu
@@ -40,8 +41,11 @@ class ReKVStreamVQA(BaseVQA):
             video = video[frame_idx]
         else:
             vr = VideoReader(video_path, ctx=cpu(0), num_threads=1)
-            fps = round(vr.get_avg_fps())
-            frame_idx = [i for i in range(0, len(vr), int(fps / self.sample_fps))]
+            fps = float(vr.get_avg_fps())
+            if not math.isfinite(fps) or fps <= 0:
+                fps = max(float(self.sample_fps), 1.0)
+            step = max(1, round(fps / self.sample_fps))
+            frame_idx = list(range(0, len(vr), step))
             video = vr.get_batch(frame_idx).asnumpy()
         return video
 
@@ -139,10 +143,11 @@ class ReKVStreamVQA(BaseVQA):
             # encode video until receiving QA
             new_frames = 0
             encode_video_sec = 0.0
-            if temporal_windows[-1] > video_end_idx:
+            requested_end_idx = temporal_windows[-1]
+            if requested_end_idx > video_start_idx:
                 encode_start_idx = int(video_start_idx)
-                video_end_idx = temporal_windows[-1]
-                encode_end_idx = int(video_end_idx)
+                encode_end_idx = min(len(video_tensor), math.ceil(requested_end_idx))
+                video_end_idx = encode_end_idx
                 new_frames = max(0, encode_end_idx - encode_start_idx)
                 self._sync_cuda()
                 encode_start = time.perf_counter()
@@ -153,7 +158,7 @@ class ReKVStreamVQA(BaseVQA):
                 self._sync_cuda()
                 encode_video_sec = time.perf_counter() - encode_start
                 cumulative_encode_video_sec += encode_video_sec
-                video_start_idx = video_end_idx
+                video_start_idx = encode_end_idx
         
             # OpenQA
             self._sync_cuda()

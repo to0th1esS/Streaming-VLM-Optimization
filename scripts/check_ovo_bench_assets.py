@@ -1,5 +1,6 @@
 import argparse
 import json
+import math
 from pathlib import Path
 
 
@@ -38,7 +39,27 @@ def inspect_archives(root):
     return result
 
 
-def inspect_subset(subset_json):
+def inspect_video_decode(path):
+    try:
+        from decord import VideoReader, cpu
+
+        reader = VideoReader(str(path), ctx=cpu(0), num_threads=1)
+        frame_count = len(reader)
+        fps = float(reader.get_avg_fps())
+        if frame_count < 1:
+            raise ValueError("video contains no frames")
+        if not math.isfinite(fps) or fps <= 0:
+            raise ValueError(f"invalid average FPS: {fps}")
+        reader.get_batch(sorted({0, frame_count - 1})).asnumpy()
+        return None
+    except Exception as error:
+        return {
+            "path": str(path).replace("\\", "/"),
+            "error": f"{type(error).__name__}: {error}",
+        }
+
+
+def inspect_subset(subset_json, validate_decode=False):
     if not subset_json:
         return None
     path = Path(subset_json)
@@ -51,6 +72,15 @@ def inspect_subset(subset_json):
     rows = json.loads(path.read_text(encoding="utf-8"))
     video_paths = [Path(row["video_path"]) for row in rows]
     missing = [str(path).replace("\\", "/") for path in video_paths if not path.is_file()]
+    decode_failures = []
+    if validate_decode:
+        decode_failures = [
+            failure
+            for path in video_paths
+            if path.is_file()
+            for failure in [inspect_video_decode(path)]
+            if failure is not None
+        ]
     return {
         "path": str(path).replace("\\", "/"),
         "exists": True,
@@ -58,6 +88,9 @@ def inspect_subset(subset_json):
         "available_videos": len(video_paths) - len(missing),
         "missing_videos": len(missing),
         "missing_video_examples": missing[:20],
+        "decode_checked": validate_decode,
+        "decode_failures": len(decode_failures),
+        "decode_failure_examples": decode_failures[:20],
     }
 
 
@@ -82,6 +115,7 @@ def parse_args():
         default="/home/mllm/datasets/ovo_bench",
     )
     parser.add_argument("--subset-json", default="")
+    parser.add_argument("--validate-decode", action="store_true")
     parser.add_argument(
         "--output-json",
         default="results/ovo_bench/assets_summary.json",
@@ -101,7 +135,7 @@ def main():
             "path": str(root / "chunked_videos").replace("\\", "/"),
             "exists": (root / "chunked_videos").is_dir(),
         },
-        "subset": inspect_subset(args.subset_json),
+        "subset": inspect_subset(args.subset_json, validate_decode=args.validate_decode),
     }
     output_path = Path(args.output_json)
     output_path.parent.mkdir(parents=True, exist_ok=True)

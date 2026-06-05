@@ -4,6 +4,7 @@ import unittest
 from pathlib import Path
 
 from scripts.evaluate_ovo_bench import evaluate_rows, summarize
+from scripts.chunk_ovo_bench_source_subset import MIN_CLIP_DURATION_SEC
 from scripts.prepare_ovo_bench_subset import (
     convert_annotations,
     evenly_spaced_indices,
@@ -98,6 +99,7 @@ class OVOBenchAdapterTest(unittest.TestCase):
             [item["realtime"] for item in selected],
             [10, 30, 80],
         )
+        self.assertEqual(MIN_CLIP_DURATION_SEC, 1.0)
 
     def test_time_stratified_query_selection_keeps_early_and_late_queries(self):
         queries = [

@@ -4,6 +4,9 @@ import subprocess
 from pathlib import Path
 
 
+MIN_CLIP_DURATION_SEC = 1.0
+
+
 def load_json(path):
     with Path(path).open("r", encoding="utf-8") as handle:
         return json.load(handle)
@@ -11,13 +14,14 @@ def load_json(path):
 
 def run_ffmpeg(ffmpeg, source_path, output_path, end_time):
     output_path.parent.mkdir(parents=True, exist_ok=True)
+    clip_duration = max(float(end_time), MIN_CLIP_DURATION_SEC)
     copy_command = [
         ffmpeg,
         "-y",
         "-i",
         str(source_path),
         "-t",
-        str(end_time),
+        str(clip_duration),
         "-map",
         "0:v:0",
         "-c:v",
@@ -27,14 +31,15 @@ def run_ffmpeg(ffmpeg, source_path, output_path, end_time):
         "make_zero",
         str(output_path),
     ]
-    result = subprocess.run(
-        copy_command,
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.PIPE,
-        text=True,
-    )
-    if result.returncode == 0 and output_path.is_file() and output_path.stat().st_size:
-        return "stream_copy"
+    if float(end_time) >= MIN_CLIP_DURATION_SEC:
+        result = subprocess.run(
+            copy_command,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.PIPE,
+            text=True,
+        )
+        if result.returncode == 0 and output_path.is_file() and output_path.stat().st_size:
+            return "stream_copy"
 
     output_path.unlink(missing_ok=True)
     encode_command = [
@@ -43,7 +48,7 @@ def run_ffmpeg(ffmpeg, source_path, output_path, end_time):
         "-i",
         str(source_path),
         "-t",
-        str(end_time),
+        str(clip_duration),
         "-map",
         "0:v:0",
         "-c:v",
