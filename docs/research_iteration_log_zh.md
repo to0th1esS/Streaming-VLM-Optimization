@@ -948,3 +948,196 @@ missing（缺失）=0
 ```
 
 `chunked_videos.tar.partah` 已通过断点续传补齐到 `10GB`。
+
+## 11. 低成本候选生成与候选倍率消融（2026-06-05）
+
+### 11.1 实验目的
+
+上一轮公平实验说明：
+
+```text
+内容自适应选帧在相同 201 帧写入预算下比 periodic96 高 2.78 个百分点，
+但旧 hybrid cm2 的编码时间是 periodic96 的 1.84x。
+```
+
+本轮不再增加选择规则，而是回答两个可证伪问题：
+
+1. 旧方法的主要开销是否来自全分辨率 `raw signature（原始像素签名）`？
+2. 每个时间窗生成两个候选是否必要，还是一个廉价候选已经足够？
+
+控制变量保持一致：
+
+- 模型：LLaVA-OneVision-Qwen2-7B；
+- 数据：OVO-Bench 30 条查询、6034 个输入帧；
+- 流式采样率：1 FPS（每秒一帧）；
+- 时间窗：96 帧；
+- 写入预算：每窗 1 帧，总计 201 帧；
+- 查询无关：视觉选帧阶段不读取问题文本；
+- 最终约束：OVO-Bench 官方三组宏平均准确率，而不是逐帧特征还原误差。
+
+### 11.2 实现与回退点
+
+提交：
+
+```text
+0c7ab75 feat: add low-cost semantic proposal profiling
+```
+
+回退标签：
+
+```text
+research/ovo-fair-baseline-20260605
+```
+
+新增能力：
+
+1. `grid_sample（网格采样）`：在图像转浮点和完整预处理前，只读取固定网格像素构造低维签名；
+2. `avg_pool（全图平均池化）`：保留旧实现作为可复现实验对照；
+3. 分阶段计时：
+   - `proposal（候选生成）`；
+   - `preprocess（图像预处理）`；
+   - `embedding（图像块嵌入）`；
+   - `verification（语义复核）`；
+   - `vit_encoder（视觉编码器）`；
+   - `context_write（上下文写入）`；
+4. 记录候选帧数和真正执行预处理的帧数。
+
+本地验证：
+
+```text
+unittest（单元测试）=9 / 9 passed
+ViT sparse patch certification（ViT 稀疏补丁认证）=passed
+```
+
+512 帧、224x224 CPU 微基准：
+
+| 签名方式 | 中位耗时 |
+|---|---:|
+| avg_pool（全图平均池化） | 0.033752s |
+| grid_sample（网格采样） | 0.000426s |
+
+`grid_sample` 的签名计算约快 `79x`。
+
+### 11.3 15 条查询的等价性验证
+
+远程结果：
+
+```text
+results/ovo_bench/low_cost15_7b/hybrid_avg
+results/ovo_bench/low_cost15_7b/hybrid_grid
+```
+
+两种实现均保留 93 / 2380 帧，候选数均为 141，准确率均为 `77.78%`。
+
+| 方法 | proposal | 总编码时间 | 准确率 |
+|---|---:|---:|---:|
+| avg_pool hybrid cm2 | 5.429s | 11.943s | 77.78% |
+| grid_sample hybrid cm2 | 0.036s | 7.682s | 77.78% |
+
+低成本签名使候选生成约快 `151x`，总编码时间下降 `35.7%`，且没有改变候选数量、写入预算和问答结果。
+
+### 11.4 30 条查询的 cm2 复验
+
+远程结果：
+
+```text
+results/ovo_bench/low_cost30_7b/hybrid_grid
+results/ovo_bench/low_cost30_7b/periodic96
+```
+
+| 方法 | kept / input | candidates | encode time | official accuracy |
+|---|---:|---:|---:|---:|
+| periodic96（周期均匀采样） | 201 / 6034 | 0 | 12.013s | 69.44% |
+| grid hybrid cm2 | 201 / 6034 | 310 | 13.620s | 72.22% |
+
+相对旧 `avg_pool hybrid cm2` 的 25.491s，低成本 cm2 降至 13.620s，下降 `46.6%`。
+在完全相同写入预算下，准确率优势仍为 `+2.78` 个百分点，而额外编码时间缩小到约 `13.4%`。
+
+分阶段结果显示，新的主要边际开销不再是 `proposal（候选生成）`：
+
+```text
+proposal = 0.095s
+verification = 0.239s
+preprocess = 4.556s
+```
+
+cm2 需要预处理 310 个候选，而 periodic96 只预处理最终保留的 201 帧。因此，瓶颈已经转移为候选帧的完整图像预处理。
+
+### 11.5 candidate multiplier（候选倍率）消融
+
+`cm1` 表示每个写入名额只生成一个内容候选；其余配置不变。远程结果：
+
+```text
+results/ovo_bench/low_cost30_7b/hybrid_grid_cm1
+results/ovo_bench/low_cost30_7b/hybrid_grid_cm1_r2
+results/ovo_bench/low_cost30_7b/hybrid_grid_cm1_r3
+results/ovo_bench/low_cost30_7b/periodic96_r2
+results/ovo_bench/low_cost30_7b/periodic96_r3
+```
+
+三次同卡重复：
+
+| 方法 | kept / input | candidates | encode time（均值 ± 标准差） | official accuracy |
+|---|---:|---:|---:|---:|
+| periodic96 | 201 / 6034 | 0 | 10.684 ± 1.153s | 69.44% |
+| grid hybrid cm1 | 201 / 6034 | 230 | 10.672 ± 0.133s | 72.22% |
+
+准确率在三次重复中完全一致。两种方法的编码时间均值只差 `0.012s`，应判定为速度持平，
+不能据此声称 cm1 稳定快于周期采样。
+
+cm1 的平均分阶段耗时：
+
+| 阶段 | periodic96 | grid hybrid cm1 | 差值 |
+|---|---:|---:|---:|
+| proposal（候选生成） | 0.010s | 0.063s | +0.053s |
+| preprocess（图像预处理） | 2.919s | 3.302s | +0.384s |
+| embedding（图像块嵌入） | 0.139s | 0.145s | +0.006s |
+| verification（语义复核） | 0.000s | 0.099s | +0.099s |
+| vit_encoder（视觉编码器） | 1.885s | 1.517s | -0.368s |
+| context_write（上下文写入） | 5.550s | 5.317s | -0.233s |
+
+后两项差异主要来自 GPU 运行波动和不同被选帧内容，不能解释为算法性加速。可信结论是：
+
+```text
+cm1 将内容自适应选择的额外候选成本压缩到了端到端计时噪声范围，
+同时保留了相同预算下的 QA 准确率优势。
+```
+
+相对旧 `avg_pool hybrid cm2`，cm1 平均编码时间下降 `58.1%`。
+若仅用历史 dense 结果 583.270s 作近似参照，cm1 的视觉编码加速约为 `54.7x`；
+该数字不是同版本重复计时，只能作为阶段性参考，不能直接进入论文主表。
+
+### 11.6 科学发现与方法收敛
+
+本轮形成三个连续证据：
+
+1. 全分辨率像素统计不是方法所必需，低分辨率网格足以生成当前有效候选；
+2. 第二候选没有带来额外问答收益，说明当前收益来自预算位置的内容重分配，而不是大量语义复核；
+3. 在固定写入预算下，单候选内容分配可以达到周期采样的速度，同时找回周期采样遗漏的短暂属性证据。
+
+因此，最终方法应继续收敛为一个统一操作：
+
+```text
+每个时间窗拥有固定的一个视觉写入名额；
+低成本 novelty（新颖性）信号决定该名额落在哪一帧；
+只有被提议的极少数帧进入视觉编码与上下文写入。
+```
+
+这比“周期采样再叠加若干补帧规则”更简洁，也满足：
+
+- `budget-neutral（预算中性）`：不增加写入帧数；
+- `query-independent（查询无关）`：选帧不依赖问题；
+- `streaming-compatible（兼容流式）`：只使用当前与历史状态；
+- `plug-and-play（即插即用）`：不训练、不修改语言模型；
+- `compute-storage co-design（计算与存储协同设计）`：同一决策同时减少 ViT 计算和上下文写入。
+
+### 11.7 当前证据边界与下一步
+
+当前 30 条查询中，优势仍主要来自 ATR（短暂属性识别）任务，样本量不足以证明普遍泛化。
+下一步不能继续在同一小子集微调规则，而应：
+
+1. 扩大 OVO-Bench 查询规模，优先增加短暂事件、状态变化、OCR 和动作边界样本；
+2. 固定比较 `periodic96 / grid hybrid cm1 / grid hybrid cm2`，验证 cm1 的质量优势是否稳定；
+3. 至少进行 3 次独立计时，并将视觉编码与完整生成时延分开报告；
+4. 统计选中帧相对周期位置的位移和任务类别收益，验证“预算内重分配”这一论文机制；
+5. 在更大样本复验前，不把全局 `semantic_candidate_multiplier` 默认值改为 1，避免探索结果被误当成最终方法。
