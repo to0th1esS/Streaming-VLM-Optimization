@@ -2,6 +2,7 @@ import unittest
 
 import torch
 
+from model.vit_patch import _raw_rgb_signatures
 from model.vision_accelerator.semantic_stream import SemanticStreamGate
 
 
@@ -67,6 +68,30 @@ class SemanticStreamPeriodicTest(unittest.TestCase):
         self.assertEqual(selected.tolist(), [0, 7])
         self.assertEqual(gate.stats["kept_frames"], 2)
         self.assertEqual(gate.stats["budget_kept_frames"], 1)
+
+    def test_grid_sample_signature_reads_fixed_spatial_grid(self):
+        video = torch.zeros(2, 4, 4, 3, dtype=torch.uint8)
+        video[0, 1, 1] = torch.tensor([255, 0, 0], dtype=torch.uint8)
+        video[0, 1, 3] = torch.tensor([0, 255, 0], dtype=torch.uint8)
+        video[0, 3, 1] = torch.tensor([0, 0, 255], dtype=torch.uint8)
+        video[0, 3, 3] = torch.tensor([255, 255, 255], dtype=torch.uint8)
+
+        signatures = _raw_rgb_signatures(
+            video,
+            grid_size=2,
+            mode="grid_sample",
+        )
+
+        self.assertEqual(tuple(signatures.shape), (2, 12))
+        self.assertAlmostEqual(float(signatures[0].norm()), 1.0, places=6)
+        self.assertEqual(float(signatures[1].norm()), 0.0)
+
+    def test_unknown_raw_signature_mode_fails(self):
+        with self.assertRaises(ValueError):
+            _raw_rgb_signatures(
+                torch.zeros(1, 2, 2, 3, dtype=torch.uint8),
+                mode="unknown",
+            )
 
 
 if __name__ == "__main__":

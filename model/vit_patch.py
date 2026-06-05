@@ -1,5 +1,6 @@
 import torch
 import types
+import time
 from logzero import logger
 
 from model.vision_accelerator import InferenceContext
@@ -24,6 +25,9 @@ def vit_patch_hf(model, **kwargs):
         model.semantic_stream_compute_gate = kwargs.get("enable_semantic_compute_gate", False)
         model.semantic_selection_feature_source = kwargs.get("semantic_selection_feature_source", "vit_embedding")
         model.semantic_candidate_multiplier = kwargs.get("semantic_candidate_multiplier", 4)
+        model.semantic_raw_signature_mode = kwargs.get("semantic_raw_signature_mode", "avg_pool")
+        model.semantic_raw_grid_size = kwargs.get("semantic_raw_grid_size", 4)
+        model.semantic_profile_breakdown = kwargs.get("semantic_profile_breakdown", False)
         model.semantic_stream_gate = SemanticStreamGate(
             refresh_interval=kwargs.get("semantic_refresh_interval", cache_interval),
             skip_patch_threshold=kwargs.get("semantic_skip_threshold", 0.01),
@@ -68,6 +72,19 @@ def _apply_siglip_acceleration(vision_tower, context):
 
 def _identity_vit_output_postprocess(video_features, **kwargs):
     return video_features
+
+
+def _profile_call(self, stat_key, function):
+    if not getattr(self, "semantic_profile_breakdown", False):
+        return function()
+    if torch.cuda.is_available():
+        torch.cuda.synchronize()
+    start = time.perf_counter()
+    result = function()
+    if torch.cuda.is_available():
+        torch.cuda.synchronize()
+    self.semantic_stream_gate.stats[stat_key] += time.perf_counter() - start
+    return result
 
 
 def _postprocess_vit_output(self, video_features, **kwargs):
@@ -169,96 +186,180 @@ def _encode_video_window_with_semantic_compute_gate(self, video):
     selected_by_raw = feature_source == "raw_rgb"
     selected_by_hybrid = feature_source == "hybrid"
     if selected_by_periodic:
-        keep_indices = self.semantic_stream_gate.select_periodic_indices(
-            total_frames=int(video.shape[0]),
-            token_count=self.n_frame_tokens,
-            device=video.device,
+        keep_indices = _profile_call(
+            self,
+            "proposal_sec",
+            lambda: self.semantic_stream_gate.select_periodic_indices(
+                total_frames=int(video.shape[0]),
+                token_count=self.n_frame_tokens,
+                device=video.device,
+            ),
         )
         if keep_indices.numel() == 0:
             return
         video = video.index_select(0, keep_indices)
     elif selected_by_raw:
-        raw_signatures = _raw_rgb_signatures(video)
-        keep_indices = self.semantic_stream_gate.select_indices_from_signatures(
-            raw_signatures,
-            token_count=self.n_frame_tokens,
+        def select_raw_frames():
+            signatures = _raw_rgb_signatures(
+                video,
+                grid_size=int(getattr(self, "semantic_raw_grid_size", 4)),
+                mode=getattr(self, "semantic_raw_signature_mode", "avg_pool"),
+            )
+            indices = self.semantic_stream_gate.select_indices_from_signatures(
+                signatures,
+                token_count=self.n_frame_tokens,
+            )
+            return indices
+
+        keep_indices = _profile_call(
+            self,
+            "proposal_sec",
+            select_raw_frames,
         )
         if keep_indices.numel() == 0:
             return
         video = video.index_select(0, keep_indices.to(video.device if video.is_cuda else "cpu"))
     elif selected_by_hybrid:
-        raw_signatures = _raw_rgb_signatures(video)
-        candidate_indices = _raw_rgb_candidate_indices(
-            raw_signatures,
-            self.semantic_stream_gate,
-            int(getattr(self, "semantic_candidate_multiplier", 4)),
+        def propose_candidates():
+            signatures = _raw_rgb_signatures(
+                video,
+                grid_size=int(getattr(self, "semantic_raw_grid_size", 4)),
+                mode=getattr(self, "semantic_raw_signature_mode", "avg_pool"),
+            )
+            indices = _raw_rgb_candidate_indices(
+                signatures,
+                self.semantic_stream_gate,
+                int(getattr(self, "semantic_candidate_multiplier", 4)),
+            )
+            return signatures, indices
+
+        raw_signatures, candidate_indices = _profile_call(
+            self,
+            "proposal_sec",
+            propose_candidates,
         )
         if candidate_indices.numel() == 0:
             return
+        self.semantic_stream_gate.stats["candidate_frames"] += int(candidate_indices.numel())
         video = video.index_select(0, candidate_indices.to(video.device if video.is_cuda else "cpu"))
 
-    pixel_values_videos = self.processor.video_processor(
-        video,
-        return_tensors="pt",
-    ).pixel_values_videos.to(self.device, self.dtype)
+    self.semantic_stream_gate.stats["preprocessed_frames"] += int(video.shape[0])
+    pixel_values_videos = _profile_call(
+        self,
+        "preprocess_sec",
+        lambda: self.processor.video_processor(
+            video,
+            return_tensors="pt",
+        ).pixel_values_videos.to(self.device, self.dtype),
+    )
 
     batch_size, frames, channels, height, width = pixel_values_videos.shape
     if batch_size != 1:
         return self._encode_video_chunk(video)
 
     flat_pixels = pixel_values_videos.view(batch_size * frames, channels, height, width)
-    embeddings = self.vision_tower.vision_model.embeddings(flat_pixels)
+    embeddings = _profile_call(
+        self,
+        "embedding_sec",
+        lambda: self.vision_tower.vision_model.embeddings(flat_pixels),
+    )
     if selected_by_periodic or selected_by_raw:
         kept_embeddings = embeddings
     elif selected_by_hybrid:
-        signatures = self.semantic_stream_gate._frame_signature(embeddings)
-        keep_indices = self.semantic_stream_gate.select_indices_from_candidate_signatures(
-            signatures,
-            candidate_indices.to(signatures.device),
-            total_frames=int(raw_signatures.shape[0]),
-            token_count=self.n_frame_tokens,
+        def verify_candidates():
+            signatures = self.semantic_stream_gate._frame_signature(embeddings)
+            indices = self.semantic_stream_gate.select_indices_from_candidate_signatures(
+                signatures,
+                candidate_indices.to(signatures.device),
+                total_frames=int(raw_signatures.shape[0]),
+                token_count=self.n_frame_tokens,
+            )
+            return indices
+
+        keep_indices = _profile_call(
+            self,
+            "verification_sec",
+            verify_candidates,
         )
         if keep_indices.numel() == 0:
             return
         kept_embeddings = embeddings.index_select(0, keep_indices)
     else:
-        signatures = self.semantic_stream_gate._frame_signature(embeddings)
-        keep_indices = self.semantic_stream_gate.select_indices_from_signatures(
-            signatures,
-            token_count=self.n_frame_tokens,
+        def select_from_embeddings():
+            signatures = self.semantic_stream_gate._frame_signature(embeddings)
+            return self.semantic_stream_gate.select_indices_from_signatures(
+                signatures,
+                token_count=self.n_frame_tokens,
+            )
+
+        keep_indices = _profile_call(
+            self,
+            "verification_sec",
+            select_from_embeddings,
         )
         if keep_indices.numel() == 0:
             return
         kept_embeddings = embeddings.index_select(0, keep_indices)
-    video_features = _get_video_features_from_embeddings(
+    video_features = _profile_call(
         self,
-        kept_embeddings,
-        batch_size=batch_size,
-        frames=int(keep_indices.numel()),
+        "vit_encoder_sec",
+        lambda: _get_video_features_from_embeddings(
+            self,
+            kept_embeddings,
+            batch_size=batch_size,
+            frames=int(keep_indices.numel()),
+        ),
     )
     if video_features.shape[1] == 0:
         return
     assert self.n_local >= video_features.shape[1], (
         f"n_local: {self.n_local}, video_features: {video_features.shape[1]}"
     )
-    output = self.language_model(
-        inputs_embeds=video_features,
-        past_key_values=self.kv_cache,
-        use_cache=True,
-        return_dict=True,
+    output = _profile_call(
+        self,
+        "context_write_sec",
+        lambda: self.language_model(
+            inputs_embeds=video_features,
+            past_key_values=self.kv_cache,
+            use_cache=True,
+            return_dict=True,
+        ),
     )
     self.kv_cache = output.past_key_values
 
 
-def _raw_rgb_signatures(video, grid_size=4):
+def _raw_rgb_signatures(video, grid_size=4, mode="avg_pool"):
     if video.ndim != 4:
         raise ValueError(f"Expected video tensor [frames, height, width, channels], got {tuple(video.shape)}")
-    frames = video.float()
-    if frames.max() > 1.0:
-        frames = frames / 255.0
-    frames = frames.permute(0, 3, 1, 2).contiguous()
-    pooled = torch.nn.functional.adaptive_avg_pool2d(frames, (grid_size, grid_size))
-    signatures = pooled.flatten(1)
+    if grid_size < 1:
+        raise ValueError("grid_size must be >= 1")
+    if mode == "avg_pool":
+        frames = video.float()
+        if video.dtype == torch.uint8:
+            frames = frames / 255.0
+        frames = frames.permute(0, 3, 1, 2).contiguous()
+        signatures = torch.nn.functional.adaptive_avg_pool2d(
+            frames,
+            (grid_size, grid_size),
+        ).flatten(1)
+    elif mode == "grid_sample":
+        height, width = int(video.shape[1]), int(video.shape[2])
+        y_indices = (
+            (torch.arange(grid_size, device=video.device, dtype=torch.float32) + 0.5)
+            * height
+            / grid_size
+        ).long().clamp(max=height - 1)
+        x_indices = (
+            (torch.arange(grid_size, device=video.device, dtype=torch.float32) + 0.5)
+            * width
+            / grid_size
+        ).long().clamp(max=width - 1)
+        sampled = video.index_select(1, y_indices).index_select(2, x_indices).float()
+        if video.dtype == torch.uint8:
+            sampled = sampled / 255.0
+        signatures = sampled.flatten(1)
+    else:
+        raise ValueError(f"Unknown raw RGB signature mode: {mode}")
     return torch.nn.functional.normalize(signatures, dim=-1)
 
 

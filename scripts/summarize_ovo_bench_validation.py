@@ -45,8 +45,12 @@ def summarize(root, methods):
             "speedup_vs_dense": dense_time / encode_time if encode_time else 0.0,
             "semantic_input_frames": int(metrics["semantic_input_frames"]),
             "semantic_kept_frames": int(metrics["semantic_kept_frames"]),
+            "semantic_candidate_frames": int(metrics.get("semantic_candidate_frames", 0)),
+            "semantic_preprocessed_frames": int(metrics.get("semantic_preprocessed_frames", 0)),
             "semantic_token_reduction": float(metrics["semantic_token_reduction"]),
         }
+        for stage, seconds in metrics.get("semantic_timing_sec", {}).items():
+            row[f"{stage}_sec"] = float(seconds)
         for group in ("backward", "realtime", "forward"):
             group_metrics = metrics.get("per_group", {}).get(group, {})
             row[f"{group}_official_accuracy"] = float(

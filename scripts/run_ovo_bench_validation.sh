@@ -18,6 +18,9 @@ MAX_QUERIES_PER_SOURCE="${MAX_QUERIES_PER_SOURCE:-2}"
 BUDGET_WINDOW="${BUDGET_WINDOW:-96}"
 RECENCY_KEEP="${RECENCY_KEEP:-4}"
 CANDIDATE_MULTIPLIER="${CANDIDATE_MULTIPLIER:-2}"
+RAW_SIGNATURE_MODE="${RAW_SIGNATURE_MODE:-avg_pool}"
+RAW_GRID_SIZE="${RAW_GRID_SIZE:-4}"
+PROFILE_BREAKDOWN="${PROFILE_BREAKDOWN:-false}"
 
 prepare_subset() {
   "$PYTHON_BIN" scripts/prepare_ovo_bench_subset.py \
@@ -73,7 +76,10 @@ main() {
     --semantic_skip_threshold 0 \
     --semantic_recency_keep_frames "$RECENCY_KEEP" \
     --semantic_selection_policy periodic \
-    --semantic_selection_feature_source raw_rgb
+    --semantic_selection_feature_source raw_rgb \
+    --semantic_raw_signature_mode "$RAW_SIGNATURE_MODE" \
+    --semantic_raw_grid_size "$RAW_GRID_SIZE" \
+    --semantic_profile_breakdown "$PROFILE_BREAKDOWN"
 
   run_method hybrid_cm2 \
     --enable_vit_sparse true \
@@ -86,6 +92,9 @@ main() {
     --semantic_selection_policy budget_topk \
     --semantic_selection_feature_source hybrid \
     --semantic_candidate_multiplier "$CANDIDATE_MULTIPLIER" \
+    --semantic_raw_signature_mode "$RAW_SIGNATURE_MODE" \
+    --semantic_raw_grid_size "$RAW_GRID_SIZE" \
+    --semantic_profile_breakdown "$PROFILE_BREAKDOWN" \
     --semantic_budget_window_size "$BUDGET_WINDOW" \
     --semantic_budget_keep_per_window 1
 

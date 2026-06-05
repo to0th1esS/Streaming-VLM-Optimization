@@ -219,6 +219,13 @@ def work(QA_CLASS):
         default="vit_embedding",
     )
     parser.add_argument("--semantic_candidate_multiplier", type=int, default=4)
+    parser.add_argument(
+        "--semantic_raw_signature_mode",
+        choices=["avg_pool", "grid_sample"],
+        default="avg_pool",
+    )
+    parser.add_argument("--semantic_raw_grid_size", type=int, default=4)
+    parser.add_argument("--semantic_profile_breakdown", type=str2bool, nargs='?', const=True, default=False)
     parser.add_argument("--semantic_budget_window_size", type=int, default=0)
     parser.add_argument("--semantic_budget_keep_per_window", type=int, default=1)
     parser.add_argument("--enable_query_aware_retrieval", type=str2bool, nargs='?', const=True, default=False)
@@ -275,6 +282,9 @@ def work(QA_CLASS):
                     "semantic_selection_policy": args.semantic_selection_policy,
                     "semantic_selection_feature_source": args.semantic_selection_feature_source,
                     "semantic_candidate_multiplier": args.semantic_candidate_multiplier,
+                    "semantic_raw_signature_mode": args.semantic_raw_signature_mode,
+                    "semantic_raw_grid_size": args.semantic_raw_grid_size,
+                    "semantic_profile_breakdown": args.semantic_profile_breakdown,
                     "semantic_budget_window_size": args.semantic_budget_window_size,
                     "semantic_budget_keep_per_window": args.semantic_budget_keep_per_window,
                 },

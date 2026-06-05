@@ -200,11 +200,29 @@ class ReKVStreamVQA(BaseVQA):
                 'semantic_input_frames': semantic_stats.get("input_frames", 0),
                 'semantic_kept_frames': semantic_stats.get("kept_frames", 0),
                 'semantic_skipped_frames': semantic_stats.get("skipped_frames", 0),
+                'semantic_candidate_frames': semantic_stats.get("candidate_frames", 0),
+                'semantic_preprocessed_frames': semantic_stats.get("preprocessed_frames", 0),
                 'semantic_recency_kept_frames': semantic_stats.get("recency_kept_frames", 0),
                 'semantic_coverage_kept_frames': semantic_stats.get("coverage_kept_frames", 0),
                 'semantic_budget_kept_frames': semantic_stats.get("budget_kept_frames", 0),
                 'semantic_input_tokens': semantic_stats.get("input_tokens", 0),
                 'semantic_written_tokens': semantic_stats.get("written_tokens", 0),
+                'semantic_raw_signature_mode': getattr(
+                    self.qa_model,
+                    "semantic_raw_signature_mode",
+                    "",
+                ),
+                'semantic_raw_grid_size': getattr(
+                    self.qa_model,
+                    "semantic_raw_grid_size",
+                    0,
+                ),
+                'semantic_proposal_sec': semantic_stats.get("proposal_sec", 0.0),
+                'semantic_preprocess_sec': semantic_stats.get("preprocess_sec", 0.0),
+                'semantic_embedding_sec': semantic_stats.get("embedding_sec", 0.0),
+                'semantic_verification_sec': semantic_stats.get("verification_sec", 0.0),
+                'semantic_vit_encoder_sec': semantic_stats.get("vit_encoder_sec", 0.0),
+                'semantic_context_write_sec': semantic_stats.get("context_write_sec", 0.0),
             })
  
 

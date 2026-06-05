@@ -285,6 +285,12 @@ def run_one(args, output_dir: Path, refresh_interval: int, threshold: float, com
         args.semantic_selection_feature_source,
         "--semantic_candidate_multiplier",
         str(args.semantic_candidate_multiplier),
+        "--semantic_raw_signature_mode",
+        args.semantic_raw_signature_mode,
+        "--semantic_raw_grid_size",
+        str(args.semantic_raw_grid_size),
+        "--semantic_profile_breakdown",
+        str(args.semantic_profile_breakdown).lower(),
         "--semantic_budget_window_size",
         str(args.semantic_budget_window_size),
         "--semantic_budget_keep_per_window",
@@ -359,6 +365,13 @@ def parse_args():
         default="vit_embedding",
     )
     parser.add_argument("--semantic-candidate-multiplier", type=int, default=4)
+    parser.add_argument(
+        "--semantic-raw-signature-mode",
+        choices=["avg_pool", "grid_sample"],
+        default="avg_pool",
+    )
+    parser.add_argument("--semantic-raw-grid-size", type=int, default=4)
+    parser.add_argument("--semantic-profile-breakdown", type=str2bool, default=False)
     parser.add_argument("--semantic-budget-window-size", type=int, default=0)
     parser.add_argument("--semantic-budget-keep-per-window", type=int, default=1)
     parser.add_argument("--enable-query-aware-retrieval", type=str2bool, default=False)

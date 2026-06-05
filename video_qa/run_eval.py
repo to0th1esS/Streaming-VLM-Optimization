@@ -33,6 +33,9 @@ def append_semantic_stream_args(cmd, args):
         "--semantic_selection_policy", str(args.semantic_selection_policy),
         "--semantic_selection_feature_source", str(args.semantic_selection_feature_source),
         "--semantic_candidate_multiplier", str(args.semantic_candidate_multiplier),
+        "--semantic_raw_signature_mode", str(args.semantic_raw_signature_mode),
+        "--semantic_raw_grid_size", str(args.semantic_raw_grid_size),
+        "--semantic_profile_breakdown", str(args.semantic_profile_breakdown),
         "--semantic_budget_window_size", str(args.semantic_budget_window_size),
         "--semantic_budget_keep_per_window", str(args.semantic_budget_keep_per_window),
         "--enable_query_aware_retrieval", str(args.enable_query_aware_retrieval),
@@ -306,6 +309,9 @@ if __name__ == "__main__":
     parser.add_argument("--semantic_selection_policy", type=str, default='threshold', choices=['threshold', 'budget_topk', 'periodic'])
     parser.add_argument("--semantic_selection_feature_source", type=str, default='vit_embedding', choices=['vit_embedding', 'raw_rgb', 'hybrid'])
     parser.add_argument("--semantic_candidate_multiplier", type=int, default=4)
+    parser.add_argument("--semantic_raw_signature_mode", type=str, default='avg_pool', choices=['avg_pool', 'grid_sample'])
+    parser.add_argument("--semantic_raw_grid_size", type=int, default=4)
+    parser.add_argument("--semantic_profile_breakdown", type=str, default='false')
     parser.add_argument("--semantic_budget_window_size", type=int, default=0)
     parser.add_argument("--semantic_budget_keep_per_window", type=int, default=1)
     parser.add_argument("--enable_query_aware_retrieval", type=str, default='false')

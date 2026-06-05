@@ -48,11 +48,19 @@ class SemanticStreamGate:
             "input_frames": 0,
             "kept_frames": 0,
             "skipped_frames": 0,
+            "candidate_frames": 0,
+            "preprocessed_frames": 0,
             "input_tokens": 0,
             "written_tokens": 0,
             "recency_kept_frames": 0,
             "coverage_kept_frames": 0,
             "budget_kept_frames": 0,
+            "proposal_sec": 0.0,
+            "preprocess_sec": 0.0,
+            "embedding_sec": 0.0,
+            "verification_sec": 0.0,
+            "vit_encoder_sec": 0.0,
+            "context_write_sec": 0.0,
         }
         self.recent_decisions = []
 
