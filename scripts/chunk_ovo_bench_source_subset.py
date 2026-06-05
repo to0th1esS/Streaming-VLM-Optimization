@@ -31,15 +31,14 @@ def run_ffmpeg(ffmpeg, source_path, output_path, end_time):
         "make_zero",
         str(output_path),
     ]
-    if float(end_time) >= MIN_CLIP_DURATION_SEC:
-        result = subprocess.run(
-            copy_command,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.PIPE,
-            text=True,
-        )
-        if result.returncode == 0 and output_path.is_file() and output_path.stat().st_size:
-            return "stream_copy"
+    result = subprocess.run(
+        copy_command,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    if result.returncode == 0 and output_path.is_file() and output_path.stat().st_size:
+        return "stream_copy"
 
     output_path.unlink(missing_ok=True)
     encode_command = [
@@ -52,9 +51,9 @@ def run_ffmpeg(ffmpeg, source_path, output_path, end_time):
         "-map",
         "0:v:0",
         "-c:v",
-        "libx264",
-        "-preset",
-        "veryfast",
+        "mpeg4",
+        "-q:v",
+        "2",
         "-an",
         str(output_path),
     ]
