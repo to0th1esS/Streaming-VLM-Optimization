@@ -34,11 +34,18 @@ def write_json(path, data):
         json.dump(data, handle, ensure_ascii=False, indent=2)
 
 
-def load_excluded_source_ids(subset_json):
+def load_excluded_sources(subset_json):
     if not subset_json:
-        return set()
+        return set(), set()
     rows = load_json(subset_json)
-    return {int(row["official_id"]) for row in rows}
+    source_ids = {int(row["official_id"]) for row in rows}
+    # 同一原始视频可能对应多个官方条目和不同时间截断，必须整体隔离以避免留出集泄漏。
+    original_videos = {
+        str(row.get("original_video", "")).strip()
+        for row in rows
+        if str(row.get("original_video", "")).strip()
+    }
+    return source_ids, original_videos
 
 
 def format_multiple_choice_prompt(question, options):
@@ -310,7 +317,10 @@ def parse_args():
     parser.add_argument(
         "--exclude-subset-json",
         default="",
-        help="Exclude every official source id already present in another converted subset.",
+        help=(
+            "Exclude every official source id and original video already present "
+            "in another converted subset."
+        ),
     )
     parser.add_argument(
         "--require-videos",
@@ -323,12 +333,18 @@ def parse_args():
 def main():
     args = parse_args()
     annotations = load_json(args.source_json)
-    excluded_source_ids = load_excluded_source_ids(args.exclude_subset_json)
-    if excluded_source_ids:
+    excluded_source_ids, excluded_original_videos = load_excluded_sources(
+        args.exclude_subset_json
+    )
+    if excluded_source_ids or excluded_original_videos:
         annotations = [
             item
             for item in annotations
-            if int(item["id"]) not in excluded_source_ids
+            if (
+                int(item["id"]) not in excluded_source_ids
+                and str(item.get("video", "")).strip()
+                not in excluded_original_videos
+            )
         ]
     rows, source_counts = convert_annotations(
         annotations,
@@ -353,6 +369,7 @@ def main():
             "source_fold_index": args.source_fold_index,
             "exclude_subset_json": str(args.exclude_subset_json).replace("\\", "/"),
             "excluded_source_items": len(excluded_source_ids),
+            "excluded_original_videos": len(excluded_original_videos),
         }
     )
     if args.require_videos and summary["missing_video_files"]:
