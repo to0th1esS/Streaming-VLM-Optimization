@@ -259,6 +259,22 @@ class ReKVStreamVQA(BaseVQA):
                 'semantic_embedding_sec': semantic_stats.get("embedding_sec", 0.0),
                 'semantic_verification_sec': semantic_stats.get("verification_sec", 0.0),
                 'semantic_vit_encoder_sec': semantic_stats.get("vit_encoder_sec", 0.0),
+                'semantic_vision_backbone_sec': semantic_stats.get(
+                    "vision_backbone_sec",
+                    0.0,
+                ),
+                'semantic_spatial_pool_sec': semantic_stats.get(
+                    "spatial_pool_sec",
+                    0.0,
+                ),
+                'semantic_projector_sec': semantic_stats.get(
+                    "projector_sec",
+                    0.0,
+                ),
+                'semantic_output_reduce_sec': semantic_stats.get(
+                    "output_reduce_sec",
+                    0.0,
+                ),
                 'semantic_context_write_sec': semantic_stats.get("context_write_sec", 0.0),
                 'vit_dense_frames': semantic_stats.get("vit_dense_frames", 0),
                 'vit_sparse_frames': semantic_stats.get("vit_sparse_frames", 0),

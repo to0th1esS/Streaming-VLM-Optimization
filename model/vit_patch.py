@@ -158,22 +158,42 @@ def _project_and_postprocess_vit_output(
     )
     if isinstance(postprocess, StructuredGridTokenReducer):
         # 先压缩规则 ViT 网格，再执行 projector（投影器），同步减少视觉编码计算。
-        reduced_feature = postprocess(
-            selected_video_feature,
+        reduced_feature = _profile_call(
+            self,
+            "spatial_pool_sec",
+            lambda: postprocess(
+                selected_video_feature,
+                batch_size=batch_size,
+                frames=frames,
+                **kwargs,
+            ),
+        )
+        return _profile_call(
+            self,
+            "projector_sec",
+            lambda: self.multi_modal_projector(reduced_feature),
+        )
+    projected = _profile_call(
+        self,
+        "projector_sec",
+        lambda: self.multi_modal_projector(selected_video_feature),
+    )
+    pooled = _profile_call(
+        self,
+        "spatial_pool_sec",
+        lambda: self.apply_pooling(projected),
+    )
+    return _profile_call(
+        self,
+        "output_reduce_sec",
+        lambda: _postprocess_vit_output(
+            self,
+            pooled,
             batch_size=batch_size,
             frames=frames,
+            selected_video_feature=selected_video_feature,
             **kwargs,
-        )
-        return self.multi_modal_projector(reduced_feature)
-    projected = self.multi_modal_projector(selected_video_feature)
-    pooled = self.apply_pooling(projected)
-    return _postprocess_vit_output(
-        self,
-        pooled,
-        batch_size=batch_size,
-        frames=frames,
-        selected_video_feature=selected_video_feature,
-        **kwargs,
+        ),
     )
 
 
@@ -203,9 +223,13 @@ def _new_get_video_features(self, pixel_values_videos):
 
 
 def _get_video_features_from_embeddings(self, embeddings, batch_size, frames):
-    encoder_outputs = self.vision_tower.vision_model.encoder(
-        inputs_embeds=embeddings,
-        output_hidden_states=True,
+    encoder_outputs = _profile_call(
+        self,
+        "vision_backbone_sec",
+        lambda: self.vision_tower.vision_model.encoder(
+            inputs_embeds=embeddings,
+            output_hidden_states=True,
+        ),
     )
     selected_video_feature = encoder_outputs.hidden_states[self.config.vision_feature_layer]
 
@@ -239,9 +263,13 @@ def _get_video_features_from_embeddings_streaming(self, embeddings):
         ):
             torch.cuda.synchronize()
         start = time.perf_counter()
-        encoder_outputs = self.vision_tower.vision_model.encoder(
-            inputs_embeds=frame_embedding,
-            output_hidden_states=True,
+        encoder_outputs = _profile_call(
+            self,
+            "vision_backbone_sec",
+            lambda: self.vision_tower.vision_model.encoder(
+                inputs_embeds=frame_embedding,
+                output_hidden_states=True,
+            ),
         )
         if torch.cuda.is_available() and getattr(
             self,

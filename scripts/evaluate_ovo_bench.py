@@ -187,6 +187,10 @@ def summarize(evaluated):
             "embedding",
             "verification",
             "vit_encoder",
+            "vision_backbone",
+            "spatial_pool",
+            "projector",
+            "output_reduce",
             "context_write",
         )
     }
@@ -197,6 +201,10 @@ def summarize(evaluated):
     visual_selection_sec = sum(
         semantic_timing_sec[key]
         for key in ("proposal", "verification")
+    )
+    model_encoding_sec = sum(
+        semantic_timing_sec[key]
+        for key in ("embedding", "vit_encoder")
     )
 
     return {
@@ -236,6 +244,7 @@ def summarize(evaluated):
         "latency_scope_sec": {
             # 视觉编码不包含帧选择；流式摄取包含选择、视觉编码和上下文写入。
             "visual_selection": visual_selection_sec,
+            "model_encoding": model_encoding_sec,
             "visual_encoding": visual_encoding_sec,
             "stream_ingestion": (
                 visual_selection_sec

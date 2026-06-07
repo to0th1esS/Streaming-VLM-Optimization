@@ -260,6 +260,7 @@ class OVOBenchAdapterTest(unittest.TestCase):
         summary = summarize(evaluate_rows(rows))
 
         self.assertEqual(summary["latency_scope_sec"]["visual_selection"], 3.0)
+        self.assertEqual(summary["latency_scope_sec"]["model_encoding"], 9.0)
         self.assertEqual(summary["latency_scope_sec"]["visual_encoding"], 12.0)
         self.assertEqual(summary["latency_scope_sec"]["stream_ingestion"], 21.0)
 
