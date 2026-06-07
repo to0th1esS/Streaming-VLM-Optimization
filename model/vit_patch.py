@@ -172,6 +172,7 @@ def _project_and_postprocess_vit_output(
         pooled,
         batch_size=batch_size,
         frames=frames,
+        selected_video_feature=selected_video_feature,
         **kwargs,
     )
 
@@ -194,7 +195,6 @@ def _new_get_video_features(self, pixel_values_videos):
         batch_size=batch_size,
         frames=frames,
         pixel_values_videos=pixel_values_videos,
-        selected_video_feature=selected_video_feature,
     )
     if video_features.shape[0] == batch_size:
         return video_features
@@ -219,7 +219,6 @@ def _get_video_features_from_embeddings(self, embeddings, batch_size, frames):
         selected_video_feature,
         batch_size=batch_size,
         frames=frames,
-        selected_video_feature=selected_video_feature,
     )
     return video_features.reshape(batch_size, frames * video_features.shape[1], -1)
 
@@ -278,7 +277,6 @@ def _get_video_features_from_embeddings_streaming(self, embeddings):
                 selected_video_feature,
                 batch_size=1,
                 frames=1,
-                selected_video_feature=selected_video_feature,
             )
         )
 
