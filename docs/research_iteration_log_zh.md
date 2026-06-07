@@ -2131,3 +2131,306 @@ semantic_saliency_z_threshold=4.0
 ```
 
 其中 `semantic_refresh_interval=4` 属于早期 ViT 默认值，会错误地把长视频近似每 4 帧保留一次，不能用于当前 stable saliency 实验。
+
+## 15. 结构化语义网格：从缓存压缩推进到编码加速
+
+### 15.1 本轮目的
+
+上一轮的固定 128 token 方案已经证明：
+
+- QA 可以容忍约 35% 的视觉 token 压缩；
+- 实际 KV cache 可以同步下降；
+- 但逐 token `top-k + gather`（前 K 选择 + 不规则收集）会抵消速度收益。
+
+本轮目标是验证一个更硬件友好的设计：
+
+```text
+不再选择离散 token
+-> 将规则二维视觉网格直接压缩为更小的规则网格
+-> 保持固定形状、连续内存和 ReKV 块对齐
+```
+
+同时根据论文指标需求，将时延统一分成三级：
+
+1. `model encoding latency`（模型编码时延）：patch embedding + ViT + projector / pooling；
+2. `visual encoding latency`（视觉编码时延）：预处理 + 模型编码；
+3. `stream ingestion latency`（流式摄取时延）：帧选择 + 视觉编码 + context write。
+
+端到端系统时延继续保留，但不再掩盖视觉编码本身的收益。
+
+### 15.2 Structured Grid Token Reducer
+
+新增 `StructuredGridTokenReducer`（结构化网格 token 缩减器）。
+
+输入为规则 ViT token 网格：
+
+```text
+27 x 27 = 729 native ViT tokens
+```
+
+候选输出：
+
+```text
+12 x 12 = 144 tokens
+11 x 11 = 121 tokens
+10 x 10 = 100 tokens
+```
+
+与旧 `coverage + innovation`（覆盖 + 变化）方案相比：
+
+| 属性 | 旧逐 token 选择 | 结构化网格 |
+|---|---|---|
+| 选择方式 | cosine + top-k | 二维规则池化 |
+| 内存访问 | 不连续 gather | 连续规则张量 |
+| 输出形状 | 固定数量但位置离散 | 固定方形网格 |
+| query-aware | 否 | 否 |
+| 训练参数 | 无 | 无 |
+| ReKV 对齐 | 支持 | 支持 |
+
+该设计仍保持 query-independent（查询无关），适合流式场景在问题到达之前持续运行。
+
+### 15.3 Post-projector 初筛：只减少存储，不能减少编码
+
+第一版将规则池化放在 projector（投影器）之后：
+
+```text
+ViT 729 tokens
+-> projector 仍处理 729 tokens
+-> structured pooling
+-> 144 / 121 / 100 tokens
+```
+
+12 样本 OVO-Bench 初筛：
+
+| 方法 | official QA | visual encoding | context write | total encode | mean cache |
+|---|---:|---:|---:|---:|---:|
+| none-196 | 55.56% | 2.252s | 2.320s | 5.142s | 2.321 GB |
+| post-pool-144 | 61.11% | 2.310s | 2.445s | 5.029s | 1.707 GB |
+| post-pool-121 | 61.11% | 2.560s | 2.292s | 5.158s | 1.435 GB |
+| post-pool-100 | 61.11% | 2.507s | 2.116s | 4.976s | 1.198 GB |
+
+三个压缩点均没有 QA 负迁移；共同变化为：
+
+- `ovo-991` 从错误 B 变为正确 D；
+- `ovo-1575-7` 只发生错误答案格式变化，官方分数不变。
+
+但视觉编码没有加速，原因明确：
+
+```text
+projector 仍对 729 个 token 做完整计算，
+规则池化只减少后续写入与缓存。
+```
+
+因此 post-projector pooling（投影后池化）只作为消融，不进入当前主方法。
+
+### 15.4 Pre-projector 结构化压缩
+
+将同一个规则池化前移：
+
+```text
+ViT 27 x 27 native grid
+-> structured pool to 11 x 11
+-> projector only processes 121 tokens
+-> ReKV writes 121 tokens
+```
+
+这个顺序同时作用于：
+
+1. projector 计算；
+2. LLM context write；
+3. KV cache 存储。
+
+相比逐 token 稀疏，它不依赖不规则索引，也不要求专用 sparse kernel（稀疏内核）。
+
+### 15.5 12 样本系统初筛
+
+121 token 与 196 token 同进程、同数据顺序比较：
+
+| 指标 | none-196 | pre-pool-121 | 相对变化 |
+|---|---:|---:|---:|
+| official QA | 55.56% | 61.11% | +5.56 pp |
+| visual encoding | 2.468s | 2.506s | -1.52% |
+| context write | 3.105s | 2.614s | **+15.83%** |
+| stream ingestion | 5.726s | 5.243s | **+8.43%** |
+| total encode | 5.938s | 5.449s | **+8.25%** |
+| mean KV cache | 2.321 GB | 1.435 GB | **-38.18%** |
+
+此处 `+` 表示速度提升，`-` 表示速度下降。
+
+QA 没有观察到负迁移，仍只有 `ovo-991` 的正向变化。
+
+该结果目前只运行一次，且服务器有外部任务，因此：
+
+- 写入、缓存和 QA 方向可信；
+- 8% 左右的系统加速只能视为 preliminary result（初步结果）；
+- 不能直接作为最终论文主表数字。
+
+### 15.6 为什么进程级视觉编码计时波动
+
+对 4 个视频做三次 GPU 交换重复时，完整 model encoding 出现较大波动：
+
+- 前两次 pre-pool-121 明显更快；
+- 第三次反向；
+- 理论上输入完全相同的 vision backbone 也出现 25% 以上变化。
+
+这说明服务器并发任务、GPU 频率和执行次序污染了跨进程比较。
+
+因此增加两个同进程 CUDA event（CUDA 事件）基准：
+
+1. 固定同一批 ViT feature，测 post-ViT projection；
+2. 固定同一模型，直接测 dense frames 与 semantic frames 的视觉编码。
+
+### 15.7 Post-ViT projection 微基准
+
+设置：
+
+- 同一模型进程；
+- 同一视频的 8 帧；
+- 同一个 `selected_video_feature`；
+- 每轮 10 次 warm-up，50 次正式重复；
+- 共 5 轮，dense / structured 交替执行顺序；
+- GPU 3 有外部模型常驻，但测试期间计算利用率为 0。
+
+121 token：
+
+```text
+dense projection median:      37.14 ms
+structured projection median:  9.71 ms
+speedup:                       3.82x
+latency reduction:            73.85%
+```
+
+100 token：
+
+```text
+dense projection median:      37.13 ms
+structured projection median:  9.70 ms
+speedup:                       3.83x
+latency reduction:            73.87%
+```
+
+100 与 121 token 几乎同速，说明当前 projector 已触到该 batch shape（批形状）下的 kernel efficiency floor（内核效率下限）。
+
+因此 121 token 更合理：
+
+```text
+与 100 token 同速，但保留 21% 更多视觉 token。
+```
+
+### 15.8 Dense visual stream 与 semantic visual stream
+
+为了直接回答“编码加速有多少”，新增纯视觉编码基准，不进入 LLM，不写 KV cache。
+
+4 个 OVO 视频：
+
+| video | dense frames | semantic frames |
+|---|---:|---:|
+| ovo-1303 | 167 | 6 |
+| ovo-1472-0 | 696 | 12 |
+| ovo-379 | 324 | 8 |
+| ovo-991 | 260 | 7 |
+| total | 1447 | 33 |
+
+帧减少比例：
+
+```text
+97.72%
+```
+
+三次运行：
+
+| run | temporal sparse speedup | temporal + structured speedup |
+|---|---:|---:|
+| 1 | 40.64x | 50.15x |
+| 2 | 37.43x | 36.89x |
+| 3 | 44.19x | 54.57x |
+| median | **40.64x** | **50.15x** |
+
+第二次运行中一个长视频受到外部 GPU 任务恢复干扰，导致 structured 路径异常偏慢。使用三次中位数后：
+
+```text
+temporal saliency only:
+40.64x visual encoding speedup
+
+temporal saliency + 121 structured grid:
+50.15x visual encoding speedup
+
+structured grid on the same semantic frames:
+about 1.23x additional speedup
+about 18.96% additional latency reduction
+```
+
+输出 token 总量：
+
+```text
+dense:                     283,612
+temporal sparse-196:         6,468
+temporal + structured-121:   3,993
+```
+
+相对 dense visual stream，联合方法写入前的视觉 token 数减少：
+
+```text
+98.59%
+```
+
+### 15.9 当前可宣称与不可宣称
+
+当前可以宣称：
+
+1. 帧级 query-independent temporal saliency（查询无关时间显著性）在该 4 视频基准上带来 40.64x 视觉编码加速；
+2. pre-projector structured grid（投影前结构化网格）将 post-ViT projection 加速 3.82x；
+3. 两者联合的视觉编码中位数加速为 50.15x；
+4. 121 token 在 12 样本 OVO-Bench 上没有 QA 下降；
+5. 实际 ReKV cache 降低 38.18%，context write 初筛快 15.83%。
+
+当前不能宣称：
+
+1. 50.15x 是完整 VLM 端到端加速；
+2. 8.25% 系统编码加速已经稳定；
+3. 12 样本上的 QA 上升具有统计显著性；
+4. 当前方法已经在完整 OVO-Bench 或 StreamingBench 上超过已有工作。
+
+### 15.10 方法设计的当前形式
+
+当前主方法可以收敛为两级统一预算分配：
+
+```text
+Level 1: Temporal slot allocation
+时间槽分配
+
+Anchor-preserved saliency
+决定“哪些时刻值得进入视觉语义流”
+
+Level 2: Spatial bandwidth allocation
+空间带宽分配
+
+Pre-projector structured semantic grid
+决定“每个被保留时刻用多少规则视觉槽表示”
+```
+
+两级都满足：
+
+- query-independent（查询无关）；
+- training-free（无需训练）；
+- fixed-shape（固定形状）；
+- streaming-compatible（兼容流式处理）；
+- compute-storage co-design（计算与存储联合设计）。
+
+相比“多个工程阈值堆叠”，该结构更适合论文表达：
+
+> 将密集视频流映射为受时间槽预算和空间带宽预算共同约束的规则语义流。
+
+### 15.11 下一步
+
+1. 在服务器低负载窗口重复 12 样本系统计时至少 3 次；
+2. 将 121 token 扩展到 video-disjoint 180，验证 QA 不下降和缓存收益；
+3. 在更难、更长的视频上触发 CPU offload，验证长期缓存；
+4. 增加 dense visual encoding baseline 到正式实验表；
+5. 对比 hierarchical token compression（分层 token 压缩）基线：
+   - 相同 QA 约束；
+   - 视觉编码；
+   - context write；
+   - cache memory；
+   - 完整端到端；
+6. 暂不重新引入层内不规则 token sparse，除非改成 block-structured kernel（块结构内核）。
