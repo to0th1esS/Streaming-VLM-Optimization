@@ -293,6 +293,11 @@ class ReKVStreamVQA(BaseVQA):
                     "vit_output_selection_space",
                     "projected",
                 ),
+                'vit_output_reduction_stage': getattr(
+                    self.qa_model,
+                    "vit_output_reduction_stage",
+                    "none",
+                ),
                 'vit_output_drift_dims': getattr(
                     output_postprocess,
                     "drift_feature_dims",

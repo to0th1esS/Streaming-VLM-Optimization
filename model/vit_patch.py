@@ -25,6 +25,7 @@ def vit_patch_hf(model, **kwargs):
         "vit_output_selection_space",
         "projected",
     )
+    model.vit_output_reduction_stage = "none"
     if output_postprocess is not None:
         model.vit_output_postprocess = output_postprocess
     elif output_token_policy == "structured_pool":
@@ -32,7 +33,11 @@ def vit_patch_hf(model, **kwargs):
             output_token_budget=int(
                 kwargs.get("vit_output_token_budget", model.n_frame_tokens)
             ),
+            reference_input_tokens=int(
+                kwargs.get("vit_output_reference_tokens", 196)
+            ),
         )
+        model.vit_output_reduction_stage = "pre_projector"
     elif output_token_policy != "none":
         model.vit_output_postprocess = FixedBudgetTokenReducer(
             output_token_budget=int(
@@ -139,9 +144,9 @@ def _postprocess_vit_output(self, video_features, **kwargs):
     return postprocess(video_features, **kwargs)
 
 
-def _pool_and_postprocess_vit_output(
+def _project_and_postprocess_vit_output(
     self,
-    video_features,
+    selected_video_feature,
     batch_size,
     frames,
     **kwargs,
@@ -152,14 +157,16 @@ def _pool_and_postprocess_vit_output(
         _identity_vit_output_postprocess,
     )
     if isinstance(postprocess, StructuredGridTokenReducer):
-        # 直接从原规则网格池化到目标网格，避免先生成 196 token 再二次索引。
-        return postprocess(
-            video_features,
+        # 先压缩规则 ViT 网格，再执行 projector（投影器），同步减少视觉编码计算。
+        reduced_feature = postprocess(
+            selected_video_feature,
             batch_size=batch_size,
             frames=frames,
             **kwargs,
         )
-    pooled = self.apply_pooling(video_features)
+        return self.multi_modal_projector(reduced_feature)
+    projected = self.multi_modal_projector(selected_video_feature)
+    pooled = self.apply_pooling(projected)
     return _postprocess_vit_output(
         self,
         pooled,
@@ -181,10 +188,9 @@ def _new_get_video_features(self, pixel_values_videos):
     elif self.config.vision_feature_select_strategy == "full":
         selected_video_feature = selected_video_feature
 
-    video_features = self.multi_modal_projector(selected_video_feature)
-    video_features = _pool_and_postprocess_vit_output(
+    video_features = _project_and_postprocess_vit_output(
         self,
-        video_features,
+        selected_video_feature,
         batch_size=batch_size,
         frames=frames,
         pixel_values_videos=pixel_values_videos,
@@ -208,10 +214,9 @@ def _get_video_features_from_embeddings(self, embeddings, batch_size, frames):
     elif self.config.vision_feature_select_strategy == "full":
         selected_video_feature = selected_video_feature
 
-    video_features = self.multi_modal_projector(selected_video_feature)
-    video_features = _pool_and_postprocess_vit_output(
+    video_features = _project_and_postprocess_vit_output(
         self,
-        video_features,
+        selected_video_feature,
         batch_size=batch_size,
         frames=frames,
         selected_video_feature=selected_video_feature,
@@ -267,11 +272,10 @@ def _get_video_features_from_embeddings_streaming(self, embeddings):
         elif self.config.vision_feature_select_strategy == "full":
             selected_video_feature = selected_video_feature
 
-        projected = self.multi_modal_projector(selected_video_feature)
         frame_features.append(
-            _pool_and_postprocess_vit_output(
+            _project_and_postprocess_vit_output(
                 self,
-                projected,
+                selected_video_feature,
                 batch_size=1,
                 frames=1,
                 selected_video_feature=selected_video_feature,

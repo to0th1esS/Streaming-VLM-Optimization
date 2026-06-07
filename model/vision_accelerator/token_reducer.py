@@ -5,7 +5,11 @@ import torch.nn.functional as F
 class StructuredGridTokenReducer:
     """将规则二维 token 网格一次性池化为更小的固定方形网格。"""
 
-    def __init__(self, output_token_budget: int):
+    def __init__(
+        self,
+        output_token_budget: int,
+        reference_input_tokens: int = 196,
+    ):
         output_grid_size = int(output_token_budget**0.5)
         if output_grid_size * output_grid_size != output_token_budget:
             raise ValueError(
@@ -13,6 +17,7 @@ class StructuredGridTokenReducer:
             )
         self.output_token_budget = output_token_budget
         self.output_grid_size = output_grid_size
+        self.reference_input_tokens = int(reference_input_tokens)
         self.stats = {}
         self.reset()
 
@@ -64,7 +69,10 @@ class StructuredGridTokenReducer:
             )
         )
 
-        self.stats["input_tokens"] += int(batch_frames * token_count)
+        # reduction ratio（压缩比例）相对标准视觉输出 token 数，而非 ViT 原生 27x27 网格。
+        self.stats["input_tokens"] += int(
+            batch_frames * self.reference_input_tokens
+        )
         self.stats["output_tokens"] += int(
             batch_frames * self.output_token_budget
         )

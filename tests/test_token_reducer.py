@@ -111,7 +111,7 @@ class StructuredGridTokenReducerTest(unittest.TestCase):
 
         self.assertEqual(tuple(reduced.shape), (2, 4, 3))
         self.assertTrue(reduced.is_contiguous())
-        self.assertEqual(reducer.stats["input_tokens"], 18)
+        self.assertEqual(reducer.stats["input_tokens"], 392)
         self.assertEqual(reducer.stats["output_tokens"], 8)
 
     def test_structured_pool_rejects_non_square_budget(self):
