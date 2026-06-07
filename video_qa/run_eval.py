@@ -306,7 +306,7 @@ if __name__ == "__main__":
     parser.add_argument("--enable_vit_layer_sparse", type=str, default='true')
     parser.add_argument("--vit_cache_interval", type=int, default=2)
     parser.add_argument("--vit_update_token_ratio", type=float, default=0.25)
-    parser.add_argument("--vit_output_token_policy", type=str, default='none', choices=['none', 'uniform', 'coverage_innovation'])
+    parser.add_argument("--vit_output_token_policy", type=str, default='none', choices=['none', 'uniform', 'coverage_innovation', 'structured_pool'])
     parser.add_argument("--vit_output_token_budget", type=int, default=196)
     parser.add_argument("--vit_output_coverage_tokens", type=int, default=16)
     parser.add_argument("--vit_output_drift_dims", type=int, default=0)

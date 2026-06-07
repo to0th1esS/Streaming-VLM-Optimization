@@ -2,7 +2,7 @@ from .context import InferenceContext
 from .layer_forward import forward_siglip_adaptive
 from .layer_attention import new_siglip_sdpa_attn_forward
 from .semantic_stream import SemanticStreamGate
-from .token_reducer import FixedBudgetTokenReducer
+from .token_reducer import FixedBudgetTokenReducer, StructuredGridTokenReducer
 __all__ = [
     "InferenceContext",
     "forward_siglip_adaptive",

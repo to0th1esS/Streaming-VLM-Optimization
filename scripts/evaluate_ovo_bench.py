@@ -176,6 +176,28 @@ def summarize(evaluated):
         int(float(row.get("kv_cache_logical_tokens", 0) or 0))
         for row in final_by_video.values()
     ]
+    semantic_timing_sec = {
+        key: sum(
+            float(row.get(f"semantic_{key}_sec", 0) or 0)
+            for row in final_by_video.values()
+        )
+        for key in (
+            "proposal",
+            "preprocess",
+            "embedding",
+            "verification",
+            "vit_encoder",
+            "context_write",
+        )
+    }
+    visual_encoding_sec = sum(
+        semantic_timing_sec[key]
+        for key in ("preprocess", "embedding", "vit_encoder")
+    )
+    visual_selection_sec = sum(
+        semantic_timing_sec[key]
+        for key in ("proposal", "verification")
+    )
 
     return {
         "samples": len(evaluated),
@@ -210,19 +232,16 @@ def summarize(evaluated):
         "semantic_token_reduction": (
             1.0 - written_tokens / input_tokens if input_tokens else 0.0
         ),
-        "semantic_timing_sec": {
-            key: sum(
-                float(row.get(f"semantic_{key}_sec", 0) or 0)
-                for row in final_by_video.values()
-            )
-            for key in (
-                "proposal",
-                "preprocess",
-                "embedding",
-                "verification",
-                "vit_encoder",
-                "context_write",
-            )
+        "semantic_timing_sec": semantic_timing_sec,
+        "latency_scope_sec": {
+            # 视觉编码不包含帧选择；流式摄取包含选择、视觉编码和上下文写入。
+            "visual_selection": visual_selection_sec,
+            "visual_encoding": visual_encoding_sec,
+            "stream_ingestion": (
+                visual_selection_sec
+                + visual_encoding_sec
+                + semantic_timing_sec["context_write"]
+            ),
         },
         "vit_layer_sparse": {
             "dense_frames": sum(

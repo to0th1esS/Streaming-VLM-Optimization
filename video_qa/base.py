@@ -202,7 +202,7 @@ def work(QA_CLASS):
     parser.add_argument("--vit_update_token_ratio", type=float, default=0.25)
     parser.add_argument(
         "--vit_output_token_policy",
-        choices=["none", "uniform", "coverage_innovation"],
+        choices=["none", "uniform", "coverage_innovation", "structured_pool"],
         default="none",
     )
     parser.add_argument("--vit_output_token_budget", type=int, default=196)

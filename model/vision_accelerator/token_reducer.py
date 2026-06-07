@@ -2,6 +2,79 @@ import torch
 import torch.nn.functional as F
 
 
+class StructuredGridTokenReducer:
+    """将规则二维 token 网格一次性池化为更小的固定方形网格。"""
+
+    def __init__(self, output_token_budget: int):
+        output_grid_size = int(output_token_budget**0.5)
+        if output_grid_size * output_grid_size != output_token_budget:
+            raise ValueError(
+                "structured_pool requires a perfect-square output_token_budget"
+            )
+        self.output_token_budget = output_token_budget
+        self.output_grid_size = output_grid_size
+        self.stats = {}
+        self.reset()
+
+    def reset(self):
+        self.stats = {
+            "input_tokens": 0,
+            "output_tokens": 0,
+            "frames": 0,
+            "coverage_tokens": 0,
+            "innovation_tokens": 0,
+        }
+
+    @torch.inference_mode()
+    def __call__(self, video_features, batch_size=1, frames=1, **kwargs):
+        if video_features.ndim != 3:
+            raise ValueError(
+                "video_features must have shape [frames, tokens, hidden]"
+            )
+        batch_frames, token_count, hidden_size = video_features.shape
+        if batch_frames != batch_size * frames:
+            raise ValueError(
+                "video_features frame dimension must match batch_size * frames"
+            )
+        input_grid_size = int(token_count**0.5)
+        if input_grid_size * input_grid_size != token_count:
+            raise ValueError(
+                "structured_pool requires a square input token grid"
+            )
+
+        features_2d = video_features.reshape(
+            batch_frames,
+            input_grid_size,
+            input_grid_size,
+            hidden_size,
+        ).permute(0, 3, 1, 2).contiguous()
+        pooled = F.interpolate(
+            features_2d,
+            size=(self.output_grid_size, self.output_grid_size),
+            mode="bilinear",
+            align_corners=False,
+        )
+        pooled = (
+            pooled.permute(0, 2, 3, 1)
+            .contiguous()
+            .view(
+                batch_frames,
+                self.output_token_budget,
+                hidden_size,
+            )
+        )
+
+        self.stats["input_tokens"] += int(batch_frames * token_count)
+        self.stats["output_tokens"] += int(
+            batch_frames * self.output_token_budget
+        )
+        self.stats["frames"] += int(batch_frames)
+        self.stats["coverage_tokens"] += int(
+            batch_frames * self.output_token_budget
+        )
+        return pooled
+
+
 class FixedBudgetTokenReducer:
     """以固定预算压缩每帧视觉 token，同时保持 ReKV 块长度稳定。"""
 

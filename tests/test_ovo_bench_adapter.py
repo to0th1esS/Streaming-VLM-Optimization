@@ -241,6 +241,28 @@ class OVOBenchAdapterTest(unittest.TestCase):
         self.assertEqual(rows[1]["speedup_vs_dense"], 5.0)
         self.assertEqual(rows[2]["speedup_vs_dense"], 10.0)
 
+    def test_latency_scopes_separate_selection_encoding_and_write(self):
+        rows = [
+            {
+                "video_id": "latency-sample",
+                "benchmark_task": "EPM",
+                "pred_answer": "A",
+                "answer": "A",
+                "semantic_proposal_sec": "1.0",
+                "semantic_verification_sec": "2.0",
+                "semantic_preprocess_sec": "3.0",
+                "semantic_embedding_sec": "4.0",
+                "semantic_vit_encoder_sec": "5.0",
+                "semantic_context_write_sec": "6.0",
+            }
+        ]
+
+        summary = summarize(evaluate_rows(rows))
+
+        self.assertEqual(summary["latency_scope_sec"]["visual_selection"], 3.0)
+        self.assertEqual(summary["latency_scope_sec"]["visual_encoding"], 12.0)
+        self.assertEqual(summary["latency_scope_sec"]["stream_ingestion"], 21.0)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -6,6 +6,7 @@ from logzero import logger
 from model.vision_accelerator import InferenceContext
 from model.vision_accelerator import SemanticStreamGate
 from model.vision_accelerator import FixedBudgetTokenReducer
+from model.vision_accelerator import StructuredGridTokenReducer
 from model.vision_accelerator import forward_siglip_adaptive
 from model.vision_accelerator import new_siglip_sdpa_attn_forward
 
@@ -26,6 +27,12 @@ def vit_patch_hf(model, **kwargs):
     )
     if output_postprocess is not None:
         model.vit_output_postprocess = output_postprocess
+    elif output_token_policy == "structured_pool":
+        model.vit_output_postprocess = StructuredGridTokenReducer(
+            output_token_budget=int(
+                kwargs.get("vit_output_token_budget", model.n_frame_tokens)
+            ),
+        )
     elif output_token_policy != "none":
         model.vit_output_postprocess = FixedBudgetTokenReducer(
             output_token_budget=int(
@@ -132,6 +139,36 @@ def _postprocess_vit_output(self, video_features, **kwargs):
     return postprocess(video_features, **kwargs)
 
 
+def _pool_and_postprocess_vit_output(
+    self,
+    video_features,
+    batch_size,
+    frames,
+    **kwargs,
+):
+    postprocess = getattr(
+        self,
+        "vit_output_postprocess",
+        _identity_vit_output_postprocess,
+    )
+    if isinstance(postprocess, StructuredGridTokenReducer):
+        # 直接从原规则网格池化到目标网格，避免先生成 196 token 再二次索引。
+        return postprocess(
+            video_features,
+            batch_size=batch_size,
+            frames=frames,
+            **kwargs,
+        )
+    pooled = self.apply_pooling(video_features)
+    return _postprocess_vit_output(
+        self,
+        pooled,
+        batch_size=batch_size,
+        frames=frames,
+        **kwargs,
+    )
+
+
 def _new_get_video_features(self, pixel_values_videos):
     batch_size, frames, channels, height, width = pixel_values_videos.shape
     pixel_values_videos = pixel_values_videos.view(batch_size * frames, channels, height, width)
@@ -145,8 +182,7 @@ def _new_get_video_features(self, pixel_values_videos):
         selected_video_feature = selected_video_feature
 
     video_features = self.multi_modal_projector(selected_video_feature)
-    video_features = self.apply_pooling(video_features)
-    video_features = _postprocess_vit_output(
+    video_features = _pool_and_postprocess_vit_output(
         self,
         video_features,
         batch_size=batch_size,
@@ -173,8 +209,7 @@ def _get_video_features_from_embeddings(self, embeddings, batch_size, frames):
         selected_video_feature = selected_video_feature
 
     video_features = self.multi_modal_projector(selected_video_feature)
-    video_features = self.apply_pooling(video_features)
-    video_features = _postprocess_vit_output(
+    video_features = _pool_and_postprocess_vit_output(
         self,
         video_features,
         batch_size=batch_size,
@@ -233,11 +268,10 @@ def _get_video_features_from_embeddings_streaming(self, embeddings):
             selected_video_feature = selected_video_feature
 
         projected = self.multi_modal_projector(selected_video_feature)
-        pooled = self.apply_pooling(projected)
         frame_features.append(
-            _postprocess_vit_output(
+            _pool_and_postprocess_vit_output(
                 self,
-                pooled,
+                projected,
                 batch_size=1,
                 frames=1,
                 selected_video_feature=selected_video_feature,

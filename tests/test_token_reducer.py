@@ -2,7 +2,10 @@ import unittest
 
 import torch
 
-from model.vision_accelerator.token_reducer import FixedBudgetTokenReducer
+from model.vision_accelerator.token_reducer import (
+    FixedBudgetTokenReducer,
+    StructuredGridTokenReducer,
+)
 
 
 class FixedBudgetTokenReducerTest(unittest.TestCase):
@@ -94,6 +97,26 @@ class FixedBudgetTokenReducerTest(unittest.TestCase):
 
         self.assertEqual(tuple(sketch.shape), (1, 4, 2))
         self.assertTrue(torch.equal(sketch, features[..., [0, 3]]))
+
+
+class StructuredGridTokenReducerTest(unittest.TestCase):
+    def test_structured_pool_keeps_regular_output_grid(self):
+        reducer = StructuredGridTokenReducer(output_token_budget=4)
+        features = torch.arange(
+            2 * 9 * 3,
+            dtype=torch.float32,
+        ).reshape(2, 9, 3)
+
+        reduced = reducer(features, batch_size=1, frames=2)
+
+        self.assertEqual(tuple(reduced.shape), (2, 4, 3))
+        self.assertTrue(reduced.is_contiguous())
+        self.assertEqual(reducer.stats["input_tokens"], 18)
+        self.assertEqual(reducer.stats["output_tokens"], 8)
+
+    def test_structured_pool_rejects_non_square_budget(self):
+        with self.assertRaisesRegex(ValueError, "perfect-square"):
+            StructuredGridTokenReducer(output_token_budget=8)
 
 
 if __name__ == "__main__":
