@@ -196,6 +196,7 @@ def work(QA_CLASS):
     parser.add_argument("--n_local", type=int, default=15000)
     parser.add_argument("--retrieve_size", type=int, default=64)
     parser.add_argument("--retrieve_chunk_size", type=int, default=1)
+    parser.add_argument("--qa_max_new_tokens", type=int, default=256)
     parser.add_argument("--enable_vit_sparse", type=str2bool, nargs='?', const=True, default=True)
     parser.add_argument("--enable_vit_layer_sparse", type=str2bool, nargs='?', const=True, default=True)
     parser.add_argument("--vit_cache_interval", type=int, default=2)
@@ -347,5 +348,6 @@ def work(QA_CLASS):
         for term in args.latest_query_terms.split(",")
         if term.strip()
     ]
+    retrieve_analyzer.qa_max_new_tokens = args.qa_max_new_tokens
 
     retrieve_analyzer.analyze(debug=args.debug)

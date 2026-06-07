@@ -171,7 +171,7 @@ class ReKVStreamVQA(BaseVQA):
             )
             qa_results = self.video_open_qa(
                 question,
-                max_new_tokens=256,
+                max_new_tokens=getattr(self, "qa_max_new_tokens", 256),
                 retrieved_indices=retrieved_indices,
             )
             self._sync_cuda()

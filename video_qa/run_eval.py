@@ -50,6 +50,7 @@ def append_semantic_stream_args(cmd, args):
         "--query_retrieval_policy", str(args.query_retrieval_policy),
         "--latest_retrieval_blocks", str(args.latest_retrieval_blocks),
         "--latest_query_terms", str(args.latest_query_terms),
+        "--qa_max_new_tokens", str(args.qa_max_new_tokens),
     ])
     return cmd
 
@@ -302,6 +303,7 @@ if __name__ == "__main__":
     parser.add_argument("--sample_fps", type=float, default=1)
     parser.add_argument("--n_local", type=int, default=15000)
     parser.add_argument("--retrieve_size", type=int, default=64)
+    parser.add_argument("--qa_max_new_tokens", type=int, default=256)
     parser.add_argument("--enable_vit_sparse", type=str, default='true')
     parser.add_argument("--enable_vit_layer_sparse", type=str, default='true')
     parser.add_argument("--vit_cache_interval", type=int, default=2)
