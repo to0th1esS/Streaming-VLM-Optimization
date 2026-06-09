@@ -2609,3 +2609,279 @@ mean KV cache reduction:
 4. 增加 Hierarchical Token Compression（分层 token 压缩）同模型、同 FPS、同 QA 约束对照；
 5. 长视频触发 CPU offload（中央处理器卸载），验证缓存压缩能否转化为更长上下文容量；
 6. 保留“时间槽分配 + 空间带宽分配”的两级统一方法，不重新堆叠 query-aware 或不规则 token 选择模块。
+
+## 17. 结构化空间带宽 Pareto 验证：121 / 144 / 196 token
+
+### 17.1 实验目的
+
+上一轮确认 121-token 结构化网格能够显著降低缓存，并在 video-disjoint 180 上保持统计等价的 QA。
+本轮进一步回答：
+
+1. 121 是否压缩过强；
+2. 144 是否能以较小存储代价换取更稳定的 QA；
+3. 速度收益是否来自特定 GPU，而不是 token 预算；
+4. 哪个预算是真正的 Pareto（帕累托最优）工作点。
+
+### 17.2 连接与实验环境核验
+
+实验开始前，`remote-docker=127.0.0.1:22` 一度返回不同 SSH 主机指纹。
+没有关闭严格主机校验或直接接受未知指纹，而是依次核验：
+
+- 本机 22 端口监听进程；
+- Windows OpenSSH 主机指纹；
+- Tabby 中继连接；
+- Git 远端可达性；
+- 远端 hostname、GPU 与仓库提交。
+
+最终确认实验目标仍为：
+
+```text
+bj9-llm-g8a100-node00.alicn.idc.xiaomi.com
+Linux
+commit: dedc23e
+```
+
+该过程避免了将实验误运行在本机 Windows SSH 服务上的风险。
+
+### 17.3 公平对照设置
+
+三种空间预算：
+
+```text
+196 tokens: 原始对照
+144 tokens: 12 x 12 structured grid
+121 tokens: 11 x 11 structured grid
+```
+
+其他设置保持完全一致：
+
+- OVO-Bench 真正视频不重叠保留集 90；
+- `1 FPS`；
+- 96 帧时间窗口；
+- 每窗口 1 个显著性帧；
+- 4 个近期锚点；
+- `z=4.0`；
+- query-independent（查询无关）；
+- layer sparse（层内稀疏）关闭；
+- 每次运行前使用同一个预热样本，统计时剔除。
+
+执行两轮 GPU 轮换：
+
+```text
+Round 1:
+196 -> GPU 1
+144 -> GPU 2
+121 -> GPU 3
+
+Round 2:
+121 -> GPU 1
+196 -> GPU 2
+144 -> GPU 3
+```
+
+结果目录：
+
+```text
+results/ovo_bench/structured_grid_pareto_heldout90_20260609
+results/ovo_bench/structured_grid_pareto_heldout90_20260609_round2
+results/ovo_bench/structured_grid_pareto_heldout90_20260609_summary
+```
+
+汇总目录包含：
+
+- `pareto_summary.csv`；
+- `pareto_summary.json`；
+- `pareto_curve.png`。
+
+### 17.4 QA 结果
+
+两轮中每种配置的预测完全一致，说明当前推理路径具有确定性。
+
+| 每保留帧 token | official QA | 正确样本数 |
+|---:|---:|---:|
+| 196 | 51.85% | 50 / 90 |
+| 144 | 49.07% | 47 / 90 |
+| 121 | 50.00% | 49 / 90 |
+
+相对 196 的逐样本翻转：
+
+| 对比 | 错误变正确 | 正确变错误 | McNemar p 值 |
+|---|---:|---:|---:|
+| 196 -> 144 | 7 | 10 | 0.629 |
+| 196 -> 121 | 8 | 9 | 1.000 |
+
+144 与 121：
+
+```text
+144 -> 121:
+5 个错误变正确
+3 个正确变错误
+p = 0.727
+```
+
+所有差异均不显著，但结果明确否定了“token 越多，QA 必然越高”的简单假设。
+
+### 17.5 两轮内部计时均值
+
+| token | model encoding | visual encoding | context write | stream ingestion | total encode |
+|---:|---:|---:|---:|---:|---:|
+| 196 | 6.005s | 15.867s | 18.062s | 35.170s | 36.105s |
+| 144 | 5.311s | 15.209s | 17.459s | 33.966s | 34.758s |
+| 121 | 5.458s | 15.122s | 16.707s | 33.009s | 33.734s |
+
+相对 196 的加速：
+
+| token | model encoding | visual encoding | context write | stream ingestion | total encode |
+|---:|---:|---:|---:|---:|---:|
+| 144 | **11.56%** | 4.15% | 3.34% | 3.42% | 3.73% |
+| 121 | 9.12% | **4.70%** | **7.50%** | **6.14%** | **6.57%** |
+
+144 在狭义模型编码阶段更快，但 121 在视觉编码、上下文写入、流式摄入和总编码上更快。
+
+### 17.6 缓存结果
+
+| token | 平均 KV cache | 相对 196 |
+|---:|---:|---:|
+| 196 | 2.337 GB | 0 |
+| 144 | 1.718 GB | -26.47% |
+| 121 | 1.445 GB | **-38.18%** |
+
+缓存下降在两轮 GPU 轮换中完全一致，属于由固定 token 形状决定的确定性收益。
+
+### 17.7 核心 Insight 1：更多 token 不保证更高语义质量
+
+观察：
+
+```text
+QA:
+196 > 121 > 144
+```
+
+如果质量只由 token 数量决定，应满足：
+
+```text
+196 >= 144 >= 121
+```
+
+实际结果不满足该单调关系。
+
+原因判断：
+
+- 规则池化不仅改变 token 数量，也改变空间采样网格；
+- `12 x 12` 与 `11 x 11` 的 receptive field（感受野）和对齐位置不同；
+- 某些目标、文字或动作边界可能在一种网格下被更好聚合；
+- 视觉语义质量由“保留多少”与“如何组织空间支持域”共同决定。
+
+该 Insight 推翻：
+
+> token 数是空间质量的唯一控制量。
+
+导出的研究方向：
+
+> 空间压缩应被表述为 semantic bandwidth allocation（语义带宽分配），而不是简单 token 截断。
+
+### 17.8 核心 Insight 2：模型局部最优不等于系统最优
+
+观察：
+
+- 144 的 model encoding 加速为 11.56%，优于 121 的 9.12%；
+- 但 121 的 total encode 加速为 6.57%，优于 144 的 3.73%；
+- 121 的缓存下降也从 26.47% 扩大到 38.18%。
+
+原因判断：
+
+- GPU kernel（图形处理器内核）存在离散效率区间；
+- projector 的局部耗时不直接等于上下文写入和缓存管理的整体收益；
+- 更少的输出 token 会继续降低后端写入和 KV cache，即使局部 projector 没有线性加速。
+
+该 Insight 推翻：
+
+> 选择局部模型编码最快的预算，就能得到最快系统。
+
+导出的论文原则：
+
+> 工作点必须依据 compute-storage co-design（计算与存储联合设计）的系统 Pareto 前沿选择。
+
+### 17.9 核心 Insight 3：121 是当前系统级 Pareto 点
+
+以三个核心目标判断：
+
+1. QA 越高越好；
+2. total encode 越低越好；
+3. KV cache 越低越好。
+
+121 相比 144：
+
+- QA：50.00% > 49.07%；
+- total encode：33.734s < 34.758s；
+- cache：1.445 GB < 1.718 GB。
+
+因此 121 在三个系统目标上同时优于 144，144 被 121 支配，不属于当前系统级 Pareto 前沿。
+
+当前方法默认工作点固定为：
+
+```text
+11 x 11 structured semantic grid
+= 121 tokens per retained frame
+```
+
+这不是经验性选择最小 token，而是由质量、计算和存储三目标共同导出的工作点。
+
+### 17.10 核心 Insight 4：墙钟时延与方法时延必须分离
+
+首轮墙钟：
+
+```text
+196: 33m58s
+144: 34m32s
+121: 34m30s
+```
+
+第二轮墙钟：
+
+```text
+121: 33m59s
+196: 34m39s
+144: 34m25s
+```
+
+墙钟排序随 GPU 和视频解码波动改变，而内部模型计时与缓存趋势更稳定。
+
+原因：
+
+- H.264 视频解码；
+- 文件系统 I/O；
+- CPU 预处理；
+- GPU 调度与频率；
+- 外部共享服务器任务。
+
+因此论文实验必须分层报告：
+
+1. synchronized model timing（同步模型计时）；
+2. stream ingestion timing（流式摄入计时）；
+3. wall-clock end-to-end timing（墙钟端到端计时）。
+
+不能用单次墙钟结果替代方法加速结论。
+
+### 17.11 当前结论与下一步
+
+当前结论：
+
+```text
+Temporal slot allocation:
+anchor-preserved saliency
+
+Spatial bandwidth allocation:
+11 x 11 structured semantic grid
+
+Default bandwidth:
+121 tokens / retained frame
+```
+
+下一步不继续微调 121/144 之间的预算，而应转向更有论文价值的验证：
+
+1. 在 StreamingBench 和更完整 OVO-Bench 上验证 121 的 QA 泛化；
+2. 增加 Hierarchical Token Compression（分层 token 压缩）公平基线；
+3. 测试长视频 CPU offload（中央处理器卸载）和最大可支持上下文长度；
+4. 将视觉编码加速、上下文写入和缓存容量放入同一系统主表；
+5. 分析 11 x 11 网格为何优于 12 x 12，判断是否能形成“空间支持域对齐”而非预算搜索的更一般理论。
