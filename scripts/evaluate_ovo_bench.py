@@ -206,6 +206,31 @@ def summarize(evaluated):
         semantic_timing_sec[key]
         for key in ("embedding", "vit_encoder")
     )
+    video_encode_wall_sec = sum(
+        float(row.get("cumulative_encode_video_sec", 0) or 0)
+        for row in final_by_video.values()
+    )
+    video_load_wall_sec = sum(
+        float(row.get("load_video_sec", 0) or 0)
+        for row in final_by_video.values()
+    )
+    init_prompt_wall_sec = sum(
+        float(row.get("init_prompt_sec", 0) or 0)
+        for row in final_by_video.values()
+    )
+    qa_wall_sec = sum(
+        float(row.get("qa_sec", 0) or 0)
+        for row in evaluated
+    )
+    full_pipeline_wall_sec = sum(
+        float(row.get("elapsed_video_sec", 0) or 0)
+        for row in final_by_video.values()
+    )
+    profiled_stream_ingestion_sec = (
+        visual_selection_sec
+        + visual_encoding_sec
+        + semantic_timing_sec["context_write"]
+    )
 
     return {
         "samples": len(evaluated),
@@ -217,10 +242,20 @@ def summarize(evaluated):
         "strict_three_group_average": mean(
             [value["strict_macro_accuracy"] for value in per_group.values()]
         ),
-        "total_encode_video_sec": sum(
-            float(row.get("cumulative_encode_video_sec", 0) or 0)
-            for row in final_by_video.values()
-        ),
+        # 保留旧字段兼容历史脚本；其准确含义是同步后的 encode_video 墙钟时间。
+        "total_encode_video_sec": video_encode_wall_sec,
+        "wall_clock_sec": {
+            "video_load": video_load_wall_sec,
+            "init_prompt": init_prompt_wall_sec,
+            "video_encode": video_encode_wall_sec,
+            "qa": qa_wall_sec,
+            "full_pipeline": full_pipeline_wall_sec,
+            # 残差包含 Python 调度、张量索引、断言和未单独打点的运行时开销。
+            "video_encode_unprofiled": max(
+                0.0,
+                video_encode_wall_sec - profiled_stream_ingestion_sec,
+            ),
+        },
         "semantic_input_frames": sum(
             int(float(row.get("semantic_input_frames", 0) or 0))
             for row in final_by_video.values()
@@ -246,10 +281,39 @@ def summarize(evaluated):
             "visual_selection": visual_selection_sec,
             "model_encoding": model_encoding_sec,
             "visual_encoding": visual_encoding_sec,
+            "stream_ingestion": profiled_stream_ingestion_sec,
+        },
+        "metric_definitions": {
+            "official_three_group_average": (
+                "OVO-Bench 三个任务组的宏平均准确率；先对每个任务求准确率，"
+                "再在组内和三个组之间等权平均。"
+            ),
+            "model_encoding": (
+                "模型内部视觉编码时间：patch embedding（补丁嵌入）"
+                "加 ViT encoder（视觉编码器）；不含图像预处理和上下文写入。"
+            ),
+            "visual_encoding": (
+                "视觉编码时间：图像预处理加 model_encoding；"
+                "不含帧选择和语言模型上下文写入。"
+            ),
             "stream_ingestion": (
-                visual_selection_sec
-                + visual_encoding_sec
-                + semantic_timing_sec["context_write"]
+                "已打点的流式摄入时间：帧选择、视觉编码和视觉 token 上下文写入之和。"
+            ),
+            "video_encode": (
+                "同步墙钟 encode_video 时间：从调用 encode_video 到返回，"
+                "包含流式摄入及未单独打点的 Python/运行时开销；"
+                "不含视频文件读取、初始化提示和 QA。"
+            ),
+            "full_pipeline": (
+                "每个视频从开始读取到最后一个 QA 完成的墙钟时间，"
+                "包含视频读取、初始化提示、视频编码、检索和答案生成。"
+            ),
+            "context_write": (
+                "将保留的视觉 token 送入语言模型并更新 ReKV/KV cache 的同步时间。"
+            ),
+            "kv_cache_memory": (
+                "QA 解码前测得的 ReKV/KV cache 实际字节数；"
+                "均值用于总体比较，峰值用于长视频容量分析。"
             ),
         },
         "vit_layer_sparse": {
