@@ -4,6 +4,7 @@ from .layer_attention import new_siglip_sdpa_attn_forward
 from .semantic_stream import SemanticStreamGate
 from .token_reducer import (
     FixedBudgetTokenReducer,
+    StructuredGridTokenSampler,
     StructuredGridTokenReducer,
     StructuredResidualTokenReducer,
 )
@@ -13,6 +14,7 @@ __all__ = [
     "new_siglip_sdpa_attn_forward",
     "SemanticStreamGate",
     "FixedBudgetTokenReducer",
+    "StructuredGridTokenSampler",
     "StructuredGridTokenReducer",
     "StructuredResidualTokenReducer",
 ]

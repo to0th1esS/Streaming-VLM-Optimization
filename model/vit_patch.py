@@ -6,6 +6,7 @@ from logzero import logger
 from model.vision_accelerator import InferenceContext
 from model.vision_accelerator import SemanticStreamGate
 from model.vision_accelerator import FixedBudgetTokenReducer
+from model.vision_accelerator import StructuredGridTokenSampler
 from model.vision_accelerator import StructuredGridTokenReducer
 from model.vision_accelerator import StructuredResidualTokenReducer
 from model.vision_accelerator import forward_siglip_adaptive
@@ -30,8 +31,17 @@ def vit_patch_hf(model, **kwargs):
     model.vit_output_reduction_stage = "none"
     if output_postprocess is not None:
         model.vit_output_postprocess = output_postprocess
-    elif output_token_policy in {"structured_pool", "post_projector_pool"}:
-        model.vit_output_postprocess = StructuredGridTokenReducer(
+    elif output_token_policy in {
+        "structured_pool",
+        "post_projector_pool",
+        "post_projector_sample",
+    }:
+        reducer_class = (
+            StructuredGridTokenSampler
+            if output_token_policy == "post_projector_sample"
+            else StructuredGridTokenReducer
+        )
+        model.vit_output_postprocess = reducer_class(
             output_token_budget=int(
                 kwargs.get("vit_output_token_budget", model.n_frame_tokens)
             ),

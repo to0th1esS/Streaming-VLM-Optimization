@@ -83,6 +83,78 @@ class StructuredGridTokenReducer:
         return pooled
 
 
+class StructuredGridTokenSampler:
+    """从规则二维网格按二维均匀坐标采样，避免高维插值开销。"""
+
+    def __init__(
+        self,
+        output_token_budget: int,
+        reference_input_tokens: int = 196,
+    ):
+        output_grid_size = int(output_token_budget**0.5)
+        if output_grid_size * output_grid_size != output_token_budget:
+            raise ValueError(
+                "structured_sample requires a perfect-square output_token_budget"
+            )
+        self.output_token_budget = int(output_token_budget)
+        self.output_grid_size = output_grid_size
+        self.reference_input_tokens = int(reference_input_tokens)
+        self.stats = {}
+        self.reset()
+
+    def reset(self):
+        self.stats = {
+            "input_tokens": 0,
+            "output_tokens": 0,
+            "frames": 0,
+            "coverage_tokens": 0,
+            "innovation_tokens": 0,
+        }
+
+    @torch.inference_mode()
+    def __call__(self, video_features, batch_size=1, frames=1, **kwargs):
+        if video_features.ndim != 3:
+            raise ValueError(
+                "video_features must have shape [frames, tokens, hidden]"
+            )
+        batch_frames, token_count, _ = video_features.shape
+        if batch_frames != batch_size * frames:
+            raise ValueError(
+                "video_features frame dimension must match batch_size * frames"
+            )
+        input_grid_size = int(token_count**0.5)
+        if input_grid_size * input_grid_size != token_count:
+            raise ValueError(
+                "structured_sample requires a square input token grid"
+            )
+
+        coordinates = torch.linspace(
+            0,
+            input_grid_size - 1,
+            steps=self.output_grid_size,
+            device=video_features.device,
+        ).round().long()
+        rows, columns = torch.meshgrid(
+            coordinates,
+            coordinates,
+            indexing="ij",
+        )
+        indices = (rows * input_grid_size + columns).flatten()
+        sampled = video_features.index_select(1, indices).contiguous()
+
+        self.stats["input_tokens"] += int(
+            batch_frames * self.reference_input_tokens
+        )
+        self.stats["output_tokens"] += int(
+            batch_frames * self.output_token_budget
+        )
+        self.stats["frames"] += int(batch_frames)
+        self.stats["coverage_tokens"] += int(
+            batch_frames * self.output_token_budget
+        )
+        return sampled
+
+
 class StructuredResidualTokenReducer:
     """用规则全局基底和高重建误差细节组成固定长度语义包。"""
 

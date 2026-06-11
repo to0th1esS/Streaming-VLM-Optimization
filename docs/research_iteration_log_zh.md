@@ -3460,3 +3460,268 @@ results/ovo_bench/structured_grid100_component_profile_20260611/
 因此残差策略通过完整 QA 准入：
 
 > 允许用约 0.21 秒在线计算换取细节任务恢复，同时保持固定 121-token 缓存预算。
+
+### 18.13 Dense-1FPS 与稀疏语义流主结果
+
+结果：
+
+```text
+results/ovo_bench/realtime_dense_heldout90_20260611/dense196_gpu0
+results/ovo_bench/stable_hybrid_spatial_heldout90_20260611/none196_gpu3
+```
+
+系统边界严格使用 `online_video_processing`，不包含 1961.55 秒离线文件读取。
+
+| 指标 | Dense-1FPS | hybrid-196 | 相对变化 |
+|---|---:|---:|---:|
+| OVO 三组宏平均 | 50.93% | **53.70%** | +2.78 pp |
+| online video processing | 2116.33s | **31.94s** | **66.25x** |
+| online processing FPS | 13.04 | **约 863.7** | 66.25x |
+| realtime compute ratio | 0.07671 | **约 0.00116** | -98.49% |
+| 平均 KV cache | 6.354 GB | **2.336 GB** | **-63.24%** |
+| 峰值 KV cache | 21.661 GB | **2.613 GB** | **-87.94%** |
+
+说明：
+
+- Dense-1FPS 对 27590 个到达帧逐帧执行视觉编码和上下文写入；
+- hybrid-196 只将 691 个语义帧写入上下文；
+- `66.25x` 是帧到达后的在线模型处理加速，不含文件加载；
+- 当前多进程并发会影响 CPU 预处理墙钟，最终论文数字仍需顺序执行和 GPU 轮换；
+- 但 66x 的数量级与此前纯视觉编码 50.15x 微基准一致，不可能由普通计时噪声解释。
+
+QA 逐样本翻转：
+
+```text
+dense -> hybrid-196
+positive flips = 12
+negative flips = 7
+McNemar p = 0.359
+```
+
+当前样本不足以宣称显著精度提升，但可以说未观察到总体退化。
+
+任务组变化：
+
+| group（任务组） | Dense | hybrid-196 | 变化 |
+|---|---:|---:|---:|
+| backward（向后追溯） | **44.44%** | 33.33% | **-11.11 pp** |
+| realtime（实时感知） | 63.89% | **77.78%** | +13.89 pp |
+| forward（前向响应） | 44.44% | **50.00%** | +5.56 pp |
+
+**核心 Insight 8：**
+
+> 稀疏语义流不是单纯近似 Dense；它通过去除冗余帧降低上下文噪声，因此实时感知和前向任务可能提高，但单时间尺度选择会损失长期状态证据。
+
+这给出了方法的两个不同职责：
+
+1. event stream（事件流）负责低延迟捕获变化和当前语义；
+2. state anchor（状态锚点）负责低频保存长期环境状态。
+
+因此 dual-anchor（双锚点）不再是经验性补丁，而是由任务组误差分解直接导出的两时间尺度语义流。
+
+### 18.14 投影前空间压缩与重建残差的负结果
+
+公平时间选择均固定为：
+
+```text
+hybrid saliency-gated
+candidate multiplier = 1
+z = 4.0
+691 retained frames
+```
+
+结果：
+
+| 空间策略 | QA | backward | realtime | forward | online processing | mean cache |
+|---|---:|---:|---:|---:|---:|---:|
+| none-196 | **53.70%** | 33.33% | **77.78%** | 50.00% | 31.94s | 2.336 GB |
+| pre-projector 11x11 | 48.15% | 27.78% | 69.44% | 47.22% | 29.94s | 1.444 GB |
+| 100 base + 21 residual | 47.22% | **33.33%** | 55.56% | **52.78%** | **29.47s** | 1.444 GB |
+
+投影前 11x11 相对 none-196：
+
+```text
+在线处理额外加速 = 6.29%
+QA 下降 = 5.56 percentage points
+缓存下降 = 38.18%
+```
+
+重建残差相对 none-196：
+
+```text
+在线处理额外加速 = 7.74%
+QA 下降 = 6.48 percentage points
+缓存下降 = 38.18%
+```
+
+残差策略恢复了 HLD 等部分 backward 能力，却显著损害 OCR、ATR、STU 等实时细节任务。
+
+问题定位：
+
+1. `reconstruction residual（重建残差）` 大只表示规则低频基底难以重建，不等于对 VLM 语义重要；
+2. 10x10 池化 token 与 27x27 原生 token 具有不同感受野尺度，混合写入造成 token 分布不一致；
+3. 多模态 projector 是训练得到的视觉-语言对齐边界，在它之前改变空间统计会放大分布偏移；
+4. 额外获得的 6%--8% 在线速度远小于 5%--6% QA 绝对损失，不满足质量约束。
+
+**核心 Insight 9：**
+
+> 冗余应在其自然表示边界被删除：时间冗余在 ViT 前通过整帧跳过消除；空间存储冗余应在多模态对齐后压缩，而不是为了少量 projector 加速破坏输入分布。
+
+因此下一版将职责解耦：
+
+```text
+ViT 前：
+event-driven temporal sparsity（事件驱动时间稀疏）
+-> 负责主要视觉计算加速
+
+projector 后：
+aligned spatial compression（对齐后的空间压缩）
+-> 负责上下文写入与缓存压缩
+```
+
+该设计比“投影前网格 + 原生残差”更简单，也更符合最终论文方法的统一性。
+
+### 18.15 正在验证的两个最终候选组件
+
+#### A. post-projector structured pooling（投影后结构池化）
+
+新增：
+
+```text
+vit_output_token_policy = post_projector_pool
+vit_output_token_budget = 121
+```
+
+流程：
+
+```text
+ViT 27x27
+-> 原始 projector
+-> 标准 14x14 对齐视觉 token
+-> 11x11 规则池化
+-> 固定 121-token ReKV 写入
+```
+
+它放弃约 6% 的投影前额外加速，换取：
+
+- 保持 projector 训练分布；
+- 继续获得 38% 左右缓存和写入下降；
+- 避免不规则 top-k 和混合感受野。
+
+结果目录：
+
+```text
+results/ovo_bench/stable_hybrid_postpool121_heldout90_20260611/
+```
+
+#### B. dual-timescale coverage anchor（双时间尺度覆盖锚点）
+
+设置：
+
+```text
+fast event window = 96 frames
+slow state coverage interval = 384 frames
+coverage updates event anchor = false
+```
+
+即每 96 帧保留事件语义，并每 384 帧额外保留一个不改变事件参考状态的慢速状态锚点。
+
+目标：
+
+- 恢复 Dense 在 backward 任务上的长期状态优势；
+- 保持查询无关；
+- 只增加少量慢速锚点，不退回周期密集采样。
+
+结果目录：
+
+```text
+results/ovo_bench/dual_timescale_coverage384_heldout90_20260611/
+```
+
+### 18.16 投影后 121-token：质量与存储同时改善
+
+结果目录：
+
+```text
+results/ovo_bench/stable_hybrid_postpool121_heldout90_20260611/
+```
+
+主结果：
+
+| 方法 | QA | backward | realtime | forward | online processing | mean cache |
+|---|---:|---:|---:|---:|---:|---:|
+| Dense-1FPS | 50.93% | **44.44%** | 63.89% | 44.44% | 2116.33s | 6.354 GB |
+| hybrid-196 | 53.70% | 33.33% | **77.78%** | 50.00% | **31.94s** | 2.336 GB |
+| hybrid + post-pool-121 | **57.41%** | 38.89% | 75.00% | **58.33%** | 39.13s | **1.444 GB** |
+
+相对 hybrid-196：
+
+```text
+QA: +3.70 percentage points
+平均 cache: -38.18%
+峰值 cache: -38.18%
+positive flips: 5
+negative flips: 2
+worst-group drop: realtime -2.78 percentage points
+```
+
+相对 Dense-1FPS：
+
+```text
+QA: +6.48 percentage points
+在线处理加速: 54.08x
+平均 cache: -77.27%
+峰值 cache: -92.54%
+```
+
+关键任务变化：
+
+- OCR、FPD 均保持 100%；
+- backward 从 hybrid-196 的 33.33% 恢复到 38.89%；
+- forward 从 50.00% 提高到 58.33%；
+- realtime 仅下降 2.78 个百分点。
+
+该结果与投影前压缩形成清晰对照：
+
+```text
+pre-projector 121: 48.15%
+post-projector 121: 57.41%
+```
+
+两者 token 数和缓存完全相同，差异来自压缩表示边界。
+
+**核心 Insight 10：**
+
+> 多模态 projector 不只是计算组件，也是语义对齐边界；在对齐后压缩可以形成有益的语义平滑，而在对齐前压缩会破坏视觉-语言表示分布。
+
+当前单轮 post-pool 在线时间比 hybrid-196 慢 22.5%，原因包括：
+
+- 3584 维投影 token 上执行双线性插值；
+- 8 帧额外池化中位时延为 8.85 ms；
+- 当前运行与其他任务共享 CPU/存储，不能作为最终计时。
+
+同进程微基准：
+
+```text
+dense projector + standard pool = 17.247 ms / 8 frames
+post-projector bilinear pool only = 8.852 ms / 8 frames
+combined = 27.657 ms / 8 frames
+```
+
+因此质量与存储方向已经成立，下一步只优化算子：
+
+```text
+14x14 aligned grid
+-> regular 11x11 index sampling
+-> no interpolation
+-> no top-k
+-> fixed 121 tokens
+```
+
+新增候选策略：
+
+```text
+vit_output_token_policy = post_projector_sample
+```
+
+目标是在保持对齐后压缩原则的同时，将空间操作降为规则索引成本。

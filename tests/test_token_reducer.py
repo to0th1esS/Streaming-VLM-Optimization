@@ -4,6 +4,7 @@ import torch
 
 from model.vision_accelerator.token_reducer import (
     FixedBudgetTokenReducer,
+    StructuredGridTokenSampler,
     StructuredGridTokenReducer,
     StructuredResidualTokenReducer,
 )
@@ -163,6 +164,26 @@ class StructuredResidualTokenReducerTest(unittest.TestCase):
                 output_token_budget=4,
                 base_token_budget=4,
             )
+
+
+class StructuredGridTokenSamplerTest(unittest.TestCase):
+    def test_samples_two_dimensional_regular_grid(self):
+        sampler = StructuredGridTokenSampler(
+            output_token_budget=4,
+            reference_input_tokens=9,
+        )
+        features = torch.arange(9, dtype=torch.float32).reshape(1, 9, 1)
+
+        sampled = sampler(features, batch_size=1, frames=1)
+
+        self.assertEqual(tuple(sampled.shape), (1, 4, 1))
+        self.assertTrue(
+            torch.equal(
+                sampled.flatten(),
+                torch.tensor([0.0, 2.0, 6.0, 8.0]),
+            )
+        )
+        self.assertEqual(sampler.stats["coverage_tokens"], 4)
 
 
 if __name__ == "__main__":

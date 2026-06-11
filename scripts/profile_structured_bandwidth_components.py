@@ -7,6 +7,7 @@ from decord import VideoReader, cpu
 
 from model.llava_onevision_rekv import load_model
 from model.vision_accelerator import (
+    StructuredGridTokenSampler,
     StructuredGridTokenReducer,
     StructuredResidualTokenReducer,
 )
@@ -24,6 +25,7 @@ def parse_args():
     parser.add_argument("--budgets", type=int, nargs="+", default=[121, 144])
     parser.add_argument("--residual-output-budget", type=int, default=121)
     parser.add_argument("--residual-base-budget", type=int, default=100)
+    parser.add_argument("--post-output-budget", type=int, default=121)
     parser.add_argument("--frames", type=int, default=8)
     parser.add_argument("--warmup", type=int, default=10)
     parser.add_argument("--repeats", type=int, default=50)
@@ -106,6 +108,8 @@ def main():
         output_token_budget=args.residual_output_budget,
         base_token_budget=args.residual_base_budget,
     )
+    post_reducer = StructuredGridTokenReducer(args.post_output_budget)
+    post_sampler = StructuredGridTokenSampler(args.post_output_budget)
     reduced_features = {
         budget: reducer(
             selected,
@@ -118,6 +122,9 @@ def main():
         selected,
         batch_size=1,
         frames=args.frames,
+    )
+    standard_pooled_features = model.apply_pooling(
+        model.multi_modal_projector(selected)
     )
 
     def dense_projector():
@@ -143,6 +150,26 @@ def main():
                 batch_size=1,
                 frames=args.frames,
             )
+        ),
+        "post_projector_pool": lambda: post_reducer(
+            standard_pooled_features,
+            batch_size=1,
+            frames=args.frames,
+        ),
+        "post_projector_sample": lambda: post_sampler(
+            standard_pooled_features,
+            batch_size=1,
+            frames=args.frames,
+        ),
+        "dense_tail_and_post_pool": lambda: post_reducer(
+            model.apply_pooling(model.multi_modal_projector(selected)),
+            batch_size=1,
+            frames=args.frames,
+        ),
+        "dense_tail_and_post_sample": lambda: post_sampler(
+            model.apply_pooling(model.multi_modal_projector(selected)),
+            batch_size=1,
+            frames=args.frames,
         ),
     }
     for budget, reducer in reducers.items():
@@ -210,6 +237,7 @@ def main():
         "budgets": args.budgets,
         "residual_output_budget": args.residual_output_budget,
         "residual_base_budget": args.residual_base_budget,
+        "post_output_budget": args.post_output_budget,
         "warmup": args.warmup,
         "repeats": args.repeats,
         "rounds": args.rounds,

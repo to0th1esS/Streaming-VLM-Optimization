@@ -210,6 +210,7 @@ def work(QA_CLASS):
             "structured_pool",
             "structured_residual",
             "post_projector_pool",
+            "post_projector_sample",
         ],
         default="none",
     )

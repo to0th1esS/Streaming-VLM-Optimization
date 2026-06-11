@@ -320,6 +320,7 @@ if __name__ == "__main__":
             "structured_pool",
             "structured_residual",
             "post_projector_pool",
+            "post_projector_sample",
         ],
     )
     parser.add_argument("--vit_output_token_budget", type=int, default=196)
