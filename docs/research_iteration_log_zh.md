@@ -2885,3 +2885,402 @@ Default bandwidth:
 3. 测试长视频 CPU offload（中央处理器卸载）和最大可支持上下文长度；
 4. 将视觉编码加速、上下文写入和缓存容量放入同一系统主表；
 5. 分析 11 x 11 网格为何优于 12 x 12，判断是否能形成“空间支持域对齐”而非预算搜索的更一般理论。
+
+## 18. 实时流边界修正、系统收益归因与 QA 失效定位
+
+### 18.1 实验目的
+
+本轮不再笼统使用“端到端”描述所有墙钟时间，而是回答三个更严格的问题：
+
+1. 对实时采集输入的视频流，哪些阶段属于本方法的系统边界；
+2. Insight 2 中“局部编码最快不等于系统最快”到底由什么组件造成；
+3. 121-token 方案的约 50% QA 处于什么绝对水平，损失集中在哪里，以及下一版算法应如何修正。
+
+代码起点：
+
+```text
+05cca7c feat: 明确评测指标并增加带宽组件分析
+```
+
+### 18.2 科研问题边界
+
+研究对象固定为：
+
+```text
+已解码 RGB 帧 x_t 按真实时间顺序到达
+-> 查询无关帧选择
+-> 图像预处理与 ViT 编码
+-> 空间语义带宽压缩
+-> 多模态投影
+-> 视觉上下文写入与 ReKV/KV cache 更新
+-> 查询到达后的检索与回答
+```
+
+以下时间不属于方法系统边界：
+
+- 摄像头采集耗时；
+- 网络传输耗时；
+- 视频文件读取；
+- H.264 等离线视频解码；
+- 等待下一帧按真实时间轴到达的自然间隔。
+
+原因是本论文优化的是“帧到达后的在线模型计算和上下文写入”，不是视频存储或编解码系统。
+OVO-Bench 的视频文件读取仅用于把离线 benchmark 适配成帧流，不得进入论文主加速比。
+
+### 18.3 指标定义
+
+后续实验固定使用以下定义：
+
+| 指标 | 中文含义 | 包含阶段 | 不包含阶段 | 论文用途 |
+|---|---|---|---|---|
+| `model_encoding` | 模型内部视觉编码 | patch embedding + ViT encoder | 图像预处理、帧选择、投影后写入 | 分析 ViT 内部计算 |
+| `visual_encoding` | 视觉编码 | 图像预处理 + model encoding | 帧选择、上下文写入 | 分析视觉前端 |
+| `stream_ingestion` | 已打点流式摄入 | 帧选择 + visual encoding + context write | 未单独打点的 Python 开销 | 组件归因 |
+| `online_video_processing` | 在线视频处理 | `encode_video` 内全部同步计算和运行时开销 | 文件读取、等待帧到达、初始化提示、QA | **论文主效率指标** |
+| `online_model_pipeline` | 在线模型流水线 | 初始化提示 + online video processing + QA | 文件读取、等待帧到达 | 系统辅助指标 |
+| `observed_stream_duration` | 输入流时长 | 到达帧数 / 采样 FPS | 程序运行时间 | 实时能力归一化 |
+| `realtime_compute_ratio` | 实时计算比 | online video processing / 输入流时长 | 离线读取 | 小于 1 表示能跟上实时流 |
+| `online_processing_fps` | 在线处理吞吐 | 到达帧数 / online video processing | 离线读取 | 最大摄入能力 |
+| `official_three_group_average` | OVO 官方三组宏平均 | 任务内准确率、组内宏平均、三组等权平均 | 样本数加权微平均 | QA 主指标 |
+| `kv_cache_memory` | 上下文缓存占用 | QA 前 ReKV/KV cache 实际字节数 | 模型权重 | 存储主指标 |
+
+历史字段 `total_encode_video_sec` 保留用于兼容旧脚本，但其准确含义就是
+`online_video_processing`，后续正文不再使用容易误解的 `total encode` 名称。
+
+`full_pipeline` 包含离线视频文件读取，仅作为 benchmark 数据适配器诊断项，
+明确禁止用于论文主加速比。
+
+代码已增加机器可读的：
+
+```text
+metric_definitions
+paper_reporting_policy
+realtime_metrics
+```
+
+本地验证：
+
+```text
+39 tests passed
+```
+
+### 18.4 核心 Insight 2 的精确定位
+
+结果目录：
+
+```text
+results/ovo_bench/structured_bandwidth_component_profile_20260611/profile.json
+```
+
+设置：
+
+- 单进程；
+- 同一张 A100；
+- 固定 8 帧 ViT 特征；
+- warmup 10 次；
+- 每个操作重复 50 次；
+- 共 6 轮；
+- 每轮轮换操作顺序，降低 GPU 升降频和缓存热度偏差。
+
+CUDA event（CUDA 事件）中位时延：
+
+| 组件 | 196 token | 144 token | 121 token |
+|---|---:|---:|---:|
+| projector only（仅投影器） | 2.096 ms | 0.243 ms | **0.198 ms** |
+| structured pool（结构池化） | - | 2.112 ms | **1.863 ms** |
+| pool + projector | 17.251 ms | 4.983 ms | **4.801 ms** |
+
+相对 196：
+
+```text
+144 token visual tail speedup = 3.46x
+121 token visual tail speedup = 3.59x
+```
+
+这证明先前“144 的 model encoding 比 121 更快”不是预算的真实因果结果。
+ViT backbone（视觉主干）在三种预算下理论上完全相同，但跨进程计时分别出现
+4.39 / 4.70 / 4.85 秒，差异来自 GPU、进程和视频内容波动。
+
+真正受 token 预算控制的组件中，121 始终快于 144：
+
+```text
+projector:        0.198 ms < 0.243 ms
+pool + projector: 4.801 ms < 4.983 ms
+context write:   16.707 s  < 17.459 s
+```
+
+对 196 -> 121 的系统收益做因果闭合：
+
+```text
+结构化视觉尾部预计节省 = 1.082 s
+上下文写入实际节省     = 1.355 s
+两者合计预计节省       = 2.436 s
+在线处理实测节省       = 2.371 s
+```
+
+预计值是实测值的 102.8%，误差约 2.8%。
+按预计收益拆分：
+
+```text
+视觉尾部贡献约 44.4%
+上下文写入贡献约 55.6%
+```
+
+**核心 Insight 2：**
+
+> 121 的系统优势不是“投影器偶然更快”，而是固定语义带宽同时减少视觉尾部计算与语言模型上下文写入；二者共同解释了几乎全部在线收益。
+
+进一步的优化优先级因此明确为：
+
+1. 继续降低每个保留帧的语义写入带宽；
+2. 在固定带宽内提高细节保真度；
+3. 不再把时间主要花在微调已经很小的 projector kernel（投影器内核）。
+
+### 18.5 121-token 的绝对 QA 水平与 SOTA 对照
+
+必须区分评测协议，不能把不同任务子集直接混成一个排行榜。
+
+#### 12 任务三组宏平均
+
+| 方法 | 模型/协议 | QA |
+|---|---|---:|
+| 当前时间稀疏 + 196 token | LLaVA-OneVision-7B，video-disjoint 90 | 51.85% |
+| 当前时间稀疏 + 121 token | LLaVA-OneVision-7B，video-disjoint 90 | 50.00% |
+| LLaVA-OneVision | OVO-Bench 官方完整集 | 52.74% |
+| StreamForest | OVO-Bench 公开结果 | 55.60% |
+| Gemini-1.5-Pro | OVO-Bench 官方完整集 | 63.00% |
+| Human（人类） | OVO-Bench 官方完整集 | 92.81% |
+
+121 相对同协议 196 的质量保持率：
+
+```text
+50.00 / 51.85 = 96.4%
+绝对下降 = 1.85 个百分点
+```
+
+该差异在当前 90 样本上 McNemar 检验 `p=1.000`，未达到统计显著。
+但“未显著”不等于已经证明等价，仍需要更大样本。
+
+#### 9 任务在线子集
+
+SimpleStream 和 OASIS 使用 Real-Time Visual Perception（实时视觉感知）
+与 Backward Tracing（向后追溯）两个类别，不包含 3 个 Forward（前向）任务。
+
+按相同两类别宏平均投影：
+
+| 方法 | 模型 | 9 任务 QA |
+|---|---|---:|
+| 当前 196 token | LLaVA-OneVision-7B | 54.17% |
+| 当前 121 token | LLaVA-OneVision-7B | 50.00% |
+| 官方/公开 LLaVA-OneVision | 7B | 53.85% |
+| HERMES | Qwen2.5-VL-7B | 59.20% |
+| SimpleStream | Qwen2.5-VL-7B，4 帧 | 65.13% |
+| OASIS | Qwen3-VL-8B | 67.68% |
+| SimpleStream | Qwen3-VL-8B | 67.70% |
+| SimpleStream | Qwen3-VL-32B，8 帧 | 74.09% |
+
+来源：
+
+- OVO-Bench CVPR 2025：<https://openaccess.thecvf.com/content/CVPR2025/html/Niu_OVO-Bench_How_Far_is_Your_Video-LLMs_from_Real-World_Online_Video_CVPR_2025_paper.html>
+- OASIS NeurIPS 2025：<https://proceedings.neurips.cc/paper_files/paper/2025/hash/71e983f4e703f67c01d2d1c7c2429d24-Abstract-Conference.html>
+- SimpleStream 2026：<https://arxiv.org/html/2604.02317v1>
+
+协议结论：
+
+1. 当前 196-token 保留集结果与公开 LLaVA-OneVision-7B 的绝对水平接近，说明评测没有明显失真；
+2. 121-token 在完整 12 任务宏平均上只下降 1.85 个百分点；
+3. 但在 9 任务投影上下降 4.17 个百分点，说明 Forward 任务的收益掩盖了部分向后追溯和实时感知损失；
+4. 当前方法不要求达到精度 SOTA，但必须报告与 SOTA 的差距，并证明作为效率插件不会额外限制更强主干。
+
+因此论文质量主张应写成：
+
+> 在同一主干、同一协议下报告质量保持和效率提升；SOTA 仅用于说明绝对任务难度和主干上限，不把不同模型规模的精度差异归因于压缩方法。
+
+### 18.6 QA 失效定位
+
+新增：
+
+```text
+scripts/analyze_bandwidth_qa_failures.py
+```
+
+结果：
+
+```text
+results/ovo_bench/structured_grid_pareto_heldout90_20260609_analysis/
+```
+
+逐样本翻转：
+
+```text
+positive flip（错误变正确）= 8
+negative flip（正确变错误）= 9
+```
+
+注意：失效分析中的逐样本微平均为 55.56% -> 54.44%，
+仅用于定位样本；论文 QA 主指标仍是 51.85% -> 50.00% 的三组宏平均。
+
+负翻转集中在：
+
+```text
+HLD: -2
+FPD: -2
+SSR: -2
+OCR: -1
+CRR: -1
+REC: -1
+```
+
+正翻转集中在：
+
+```text
+CRR: +3
+REC: +2
+ACR: +1
+ASI: +1
+OJR: +1
+```
+
+负翻转与正翻转的统计对比：
+
+| cohort（样本组） | 平均到达帧 | 平均保留帧 | 近期锚点占比 |
+|---|---:|---:|---:|
+| negative flip | 165.9 | 6.44 | 64.25% |
+| positive flip | 162.9 | 6.25 | 65.24% |
+
+二者非常接近，因此当前证据不支持：
+
+- 视频越长越容易负迁移；
+- 近期锚点占比过高是主要原因；
+- 单纯增加刷新频率就能解决空间压缩损失。
+
+逐问题检查显示：
+
+- OCR 文本块、细粒度操作准备、教程步骤状态等任务更依赖局部高频细节；
+- 动作计数和部分可回答性判断在池化后反而改善，说明规则池化可能抑制冗余噪声；
+- EPM 在 196 和 121 下均为 0，属于当前主干或流式记忆能力上限，不能归因于空间压缩。
+
+**核心 Insight 5：**
+
+> 规则空间池化同时产生“全局语义去噪”和“局部细节损失”；固定预算的关键不是继续搜索 10x10、11x11、12x12，而是显式分离低频全局语义与高频细节残差。
+
+### 18.7 下一版算法方向：固定带宽的全局基底 + 细节残差
+
+下一版不增加查询感知，不引入任务标签，也不扩大 121-token 缓存预算。
+
+候选结构：
+
+```text
+196 个 ViT 原生 token
+        |
+        +-> 10 x 10 structured base（结构化全局基底）= 100 token
+        |
+        +-> reconstruction residual（重建残差）选择 = 21 token
+        |
+        +-> 固定 121-token semantic packet（语义包）
+```
+
+设计依据：
+
+1. 100 个规则网格 token 保证完整空间覆盖和低频场景语义；
+2. 21 个残差 token 保留最难被规则池化重建的局部区域；
+3. 总输出仍为 121，ReKV block size（缓存块大小）不变；
+4. 选择完全由视觉特征自身决定，保持 query-independent（查询无关）和即插即用；
+5. 同一固定预算内同时服务全局动作/场景语义与 OCR/状态/边界细节。
+
+残差分数优先采用：
+
+```text
+native token
+与
+structured base 上采样回原网格后的特征
+之间的局部重建误差
+```
+
+它比堆叠文字检测器、光流、目标检测器更统一，也更符合顶会方法的简洁性。
+
+论文方法逻辑可压缩为一个原则：
+
+> 将密集视觉流编码为固定带宽语义包：时间上只保留语义事件，空间上用全局基底承载稳定语义、用稀疏残差承载不可预测细节。
+
+### 18.8 正在执行的边界实验
+
+远端主机重新核验：
+
+```text
+hostname: bj9-llm-g8a100-node00.alicn.idc.xiaomi.com
+commit: 05cca7c
+```
+
+实验 A：100-token 固定网格边界
+
+```text
+GPU 7
+1 FPS
+video-disjoint heldout 90 + 1 warmup
+10 x 10 structured grid
+results/ovo_bench/structured_grid_budget100_heldout90_20260611/
+```
+
+目的：
+
+- 判断 121 是否已经是固定网格的质量边界；
+- 判断继续压低上下文写入是否仍有 QA 可接受空间；
+- 为“100 base + 21 residual”提供固定预算对照。
+
+实验 B：真正 Dense-1FPS 基线
+
+```text
+GPU 0
+1 FPS
+每个到达帧均执行完整视觉编码和上下文写入
+results/ovo_bench/realtime_dense_heldout90_20260611/
+```
+
+目的：
+
+- 得到完整方法相对逐帧密集视觉流的在线处理加速；
+- 将时间稀疏收益、空间带宽收益和联合收益分开报告；
+- 避免用 121 vs 196 的 6.57% 增量收益代表整套方法。
+
+### 18.9 全局基底 + 细节残差最小实现
+
+新增策略：
+
+```text
+vit_output_token_policy = structured_residual
+vit_output_token_budget = 121
+vit_output_base_tokens = 100
+```
+
+涉及文件：
+
+```text
+model/vision_accelerator/token_reducer.py
+model/vit_patch.py
+video_qa/base.py
+video_qa/run_eval.py
+tests/test_token_reducer.py
+```
+
+实现保证：
+
+1. 输入 ViT 原生规则网格首先双线性压缩为 10 x 10 全局基底；
+2. 将基底上采样回原网格，计算逐位置特征重建误差；
+3. 选取误差最大的 21 个原生 token 作为细节残差；
+4. 拼接后严格输出 121 token；
+5. ReKV 块长度、缓存预算和每帧写入预算与当前 11 x 11 对照完全相同；
+6. 全过程不读取 query、任务类型或标注。
+
+本地验证：
+
+```text
+41 tests passed
+Python compile passed
+```
+
+完整 QA 前的准入条件：
+
+1. 同进程 A100 微基准中，残差评分开销不能抵消 pre-projector（投影前）压缩收益；
+2. 固定 121 token 下，相比 11 x 11 网格优先修复 HLD / FPD / OCR / SSR 负翻转；
+3. 不允许依靠增加缓存或 query-aware（查询感知）选择获得精度。

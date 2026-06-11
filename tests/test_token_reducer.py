@@ -5,6 +5,7 @@ import torch
 from model.vision_accelerator.token_reducer import (
     FixedBudgetTokenReducer,
     StructuredGridTokenReducer,
+    StructuredResidualTokenReducer,
 )
 
 
@@ -117,6 +118,36 @@ class StructuredGridTokenReducerTest(unittest.TestCase):
     def test_structured_pool_rejects_non_square_budget(self):
         with self.assertRaisesRegex(ValueError, "perfect-square"):
             StructuredGridTokenReducer(output_token_budget=8)
+
+
+class StructuredResidualTokenReducerTest(unittest.TestCase):
+    def test_combines_regular_base_and_high_residual_detail(self):
+        reducer = StructuredResidualTokenReducer(
+            output_token_budget=5,
+            base_token_budget=4,
+            reference_input_tokens=9,
+        )
+        features = torch.zeros(1, 9, 2)
+        features[0, 4] = torch.tensor([10.0, -10.0])
+
+        reduced = reducer(features, batch_size=1, frames=1)
+
+        self.assertEqual(tuple(reduced.shape), (1, 5, 2))
+        self.assertTrue(torch.equal(reduced[0, -1], features[0, 4]))
+        self.assertEqual(reducer.stats["coverage_tokens"], 4)
+        self.assertEqual(reducer.stats["innovation_tokens"], 1)
+
+    def test_requires_square_base_and_positive_residual_budget(self):
+        with self.assertRaisesRegex(ValueError, "perfect-square"):
+            StructuredResidualTokenReducer(
+                output_token_budget=9,
+                base_token_budget=8,
+            )
+        with self.assertRaisesRegex(ValueError, "greater"):
+            StructuredResidualTokenReducer(
+                output_token_budget=4,
+                base_token_budget=4,
+            )
 
 
 if __name__ == "__main__":

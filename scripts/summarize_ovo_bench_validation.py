@@ -31,17 +31,36 @@ def summarize(root, methods):
     metrics_by_method = {
         method: load_json(root / method / "metrics.json") for method in methods
     }
-    dense_time = float(metrics_by_method["dense"]["total_encode_video_sec"])
+    dense_time = float(
+        metrics_by_method["dense"]
+        .get("wall_clock_sec", {})
+        .get(
+            "online_video_processing",
+            metrics_by_method["dense"]["total_encode_video_sec"],
+        )
+    )
     rows = []
     for method in methods:
         metrics = metrics_by_method[method]
-        encode_time = float(metrics["total_encode_video_sec"])
+        encode_time = float(
+            metrics.get("wall_clock_sec", {}).get(
+                "online_video_processing",
+                metrics["total_encode_video_sec"],
+            )
+        )
+        online_model_pipeline = float(
+            metrics.get("wall_clock_sec", {}).get(
+                "online_model_pipeline",
+                encode_time,
+            )
+        )
         row = {
             "method": method,
             "samples": int(metrics["samples"]),
             "official_accuracy": float(metrics["official_three_group_average"]),
             "strict_accuracy": float(metrics["strict_three_group_average"]),
-            "encode_video_sec": encode_time,
+            "online_video_processing_sec": encode_time,
+            "online_model_pipeline_sec": online_model_pipeline,
             "speedup_vs_dense": dense_time / encode_time if encode_time else 0.0,
             "semantic_input_frames": int(metrics["semantic_input_frames"]),
             "semantic_kept_frames": int(metrics["semantic_kept_frames"]),

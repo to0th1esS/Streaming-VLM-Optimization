@@ -7,6 +7,7 @@ from model.vision_accelerator import InferenceContext
 from model.vision_accelerator import SemanticStreamGate
 from model.vision_accelerator import FixedBudgetTokenReducer
 from model.vision_accelerator import StructuredGridTokenReducer
+from model.vision_accelerator import StructuredResidualTokenReducer
 from model.vision_accelerator import forward_siglip_adaptive
 from model.vision_accelerator import new_siglip_sdpa_attn_forward
 
@@ -32,6 +33,19 @@ def vit_patch_hf(model, **kwargs):
         model.vit_output_postprocess = StructuredGridTokenReducer(
             output_token_budget=int(
                 kwargs.get("vit_output_token_budget", model.n_frame_tokens)
+            ),
+            reference_input_tokens=int(
+                kwargs.get("vit_output_reference_tokens", 196)
+            ),
+        )
+        model.vit_output_reduction_stage = "pre_projector"
+    elif output_token_policy == "structured_residual":
+        model.vit_output_postprocess = StructuredResidualTokenReducer(
+            output_token_budget=int(
+                kwargs.get("vit_output_token_budget", model.n_frame_tokens)
+            ),
+            base_token_budget=int(
+                kwargs.get("vit_output_base_tokens", 100)
             ),
             reference_input_tokens=int(
                 kwargs.get("vit_output_reference_tokens", 196)
@@ -156,8 +170,11 @@ def _project_and_postprocess_vit_output(
         "vit_output_postprocess",
         _identity_vit_output_postprocess,
     )
-    if isinstance(postprocess, StructuredGridTokenReducer):
-        # 先压缩规则 ViT 网格，再执行 projector（投影器），同步减少视觉编码计算。
+    if isinstance(
+        postprocess,
+        (StructuredGridTokenReducer, StructuredResidualTokenReducer),
+    ):
+        # 在 ViT 原生空间形成固定语义包，再执行 projector，同步减少计算和缓存写入。
         reduced_feature = _profile_call(
             self,
             "spatial_pool_sec",

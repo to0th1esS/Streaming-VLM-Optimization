@@ -6,7 +6,10 @@ import torch
 from decord import VideoReader, cpu
 
 from model.llava_onevision_rekv import load_model
-from model.vision_accelerator import StructuredGridTokenReducer
+from model.vision_accelerator import (
+    StructuredGridTokenReducer,
+    StructuredResidualTokenReducer,
+)
 
 
 def parse_args():
@@ -19,6 +22,8 @@ def parse_args():
     )
     parser.add_argument("--video-path", required=True)
     parser.add_argument("--budgets", type=int, nargs="+", default=[121, 144])
+    parser.add_argument("--residual-output-budget", type=int, default=121)
+    parser.add_argument("--residual-base-budget", type=int, default=100)
     parser.add_argument("--frames", type=int, default=8)
     parser.add_argument("--warmup", type=int, default=10)
     parser.add_argument("--repeats", type=int, default=50)
@@ -97,6 +102,10 @@ def main():
         budget: StructuredGridTokenReducer(budget)
         for budget in args.budgets
     }
+    residual_reducer = StructuredResidualTokenReducer(
+        output_token_budget=args.residual_output_budget,
+        base_token_budget=args.residual_base_budget,
+    )
     reduced_features = {
         budget: reducer(
             selected,
@@ -105,6 +114,11 @@ def main():
         )
         for budget, reducer in reducers.items()
     }
+    residual_features = residual_reducer(
+        selected,
+        batch_size=1,
+        frames=args.frames,
+    )
 
     def dense_projector():
         return model.multi_modal_projector(selected)
@@ -115,6 +129,21 @@ def main():
     operations = {
         "dense_projector": dense_projector,
         "dense_projector_and_pool": dense_pool,
+        "residual_pool": lambda: residual_reducer(
+            selected,
+            batch_size=1,
+            frames=args.frames,
+        ),
+        "residual_projector": lambda: model.multi_modal_projector(
+            residual_features
+        ),
+        "residual_pool_and_projector": lambda: model.multi_modal_projector(
+            residual_reducer(
+                selected,
+                batch_size=1,
+                frames=args.frames,
+            )
+        ),
     }
     for budget, reducer in reducers.items():
         # 分离规则池化和 projector，定位 token 形状在哪个组件产生硬件台阶。
@@ -179,6 +208,8 @@ def main():
         "frames": args.frames,
         "input_tokens_per_frame": int(selected.shape[1]),
         "budgets": args.budgets,
+        "residual_output_budget": args.residual_output_budget,
+        "residual_base_budget": args.residual_base_budget,
         "warmup": args.warmup,
         "repeats": args.repeats,
         "rounds": args.rounds,

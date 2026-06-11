@@ -83,6 +83,130 @@ class StructuredGridTokenReducer:
         return pooled
 
 
+class StructuredResidualTokenReducer:
+    """用规则全局基底和高重建误差细节组成固定长度语义包。"""
+
+    def __init__(
+        self,
+        output_token_budget: int,
+        base_token_budget: int = 100,
+        reference_input_tokens: int = 196,
+    ):
+        base_grid_size = int(base_token_budget**0.5)
+        if base_grid_size * base_grid_size != base_token_budget:
+            raise ValueError(
+                "structured_residual requires a perfect-square base_token_budget"
+            )
+        if output_token_budget <= base_token_budget:
+            raise ValueError(
+                "output_token_budget must be greater than base_token_budget"
+            )
+        self.output_token_budget = int(output_token_budget)
+        self.base_token_budget = int(base_token_budget)
+        self.residual_token_budget = int(
+            output_token_budget - base_token_budget
+        )
+        self.base_grid_size = base_grid_size
+        self.reference_input_tokens = int(reference_input_tokens)
+        self.stats = {}
+        self.reset()
+
+    def reset(self):
+        self.stats = {
+            "input_tokens": 0,
+            "output_tokens": 0,
+            "frames": 0,
+            "coverage_tokens": 0,
+            "innovation_tokens": 0,
+        }
+
+    @torch.inference_mode()
+    def __call__(self, video_features, batch_size=1, frames=1, **kwargs):
+        if video_features.ndim != 3:
+            raise ValueError(
+                "video_features must have shape [frames, tokens, hidden]"
+            )
+        batch_frames, token_count, hidden_size = video_features.shape
+        if batch_frames != batch_size * frames:
+            raise ValueError(
+                "video_features frame dimension must match batch_size * frames"
+            )
+        input_grid_size = int(token_count**0.5)
+        if input_grid_size * input_grid_size != token_count:
+            raise ValueError(
+                "structured_residual requires a square input token grid"
+            )
+        if self.residual_token_budget > token_count:
+            raise ValueError(
+                "residual token budget cannot exceed input token count"
+            )
+
+        features_2d = video_features.reshape(
+            batch_frames,
+            input_grid_size,
+            input_grid_size,
+            hidden_size,
+        ).permute(0, 3, 1, 2).contiguous()
+        base = F.interpolate(
+            features_2d,
+            size=(self.base_grid_size, self.base_grid_size),
+            mode="bilinear",
+            align_corners=False,
+        )
+        reconstruction = F.interpolate(
+            base,
+            size=(input_grid_size, input_grid_size),
+            mode="bilinear",
+            align_corners=False,
+        )
+        # 重建误差衡量规则低频基底无法表达的局部细节，不依赖查询或任务标签。
+        residual_scores = (
+            features_2d.float() - reconstruction.float()
+        ).square().mean(dim=1).flatten(1)
+        residual_indices = torch.topk(
+            residual_scores,
+            k=self.residual_token_budget,
+            dim=1,
+            largest=True,
+        ).indices.sort(dim=1).values
+
+        flat_features = video_features.reshape(
+            batch_frames,
+            token_count,
+            hidden_size,
+        )
+        residual = torch.gather(
+            flat_features,
+            dim=1,
+            index=residual_indices.unsqueeze(-1).expand(
+                -1,
+                -1,
+                hidden_size,
+            ),
+        )
+        base_tokens = (
+            base.permute(0, 2, 3, 1)
+            .contiguous()
+            .view(batch_frames, self.base_token_budget, hidden_size)
+        )
+        output = torch.cat([base_tokens, residual], dim=1).contiguous()
+
+        self.stats["input_tokens"] += int(
+            batch_frames * self.reference_input_tokens
+        )
+        self.stats["output_tokens"] += int(
+            batch_frames * self.output_token_budget
+        )
+        self.stats["frames"] += int(batch_frames)
+        self.stats["coverage_tokens"] += int(
+            batch_frames * self.base_token_budget
+        )
+        self.stats["innovation_tokens"] += int(
+            batch_frames * self.residual_token_budget
+        )
+        return output
+
+
 class FixedBudgetTokenReducer:
     """以固定预算压缩每帧视觉 token，同时保持 ReKV 块长度稳定。"""
 

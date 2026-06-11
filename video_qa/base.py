@@ -203,10 +203,22 @@ def work(QA_CLASS):
     parser.add_argument("--vit_update_token_ratio", type=float, default=0.25)
     parser.add_argument(
         "--vit_output_token_policy",
-        choices=["none", "uniform", "coverage_innovation", "structured_pool"],
+        choices=[
+            "none",
+            "uniform",
+            "coverage_innovation",
+            "structured_pool",
+            "structured_residual",
+        ],
         default="none",
     )
     parser.add_argument("--vit_output_token_budget", type=int, default=196)
+    parser.add_argument(
+        "--vit_output_base_tokens",
+        type=int,
+        default=100,
+        help="结构残差策略中的规则全局基底 token 数。",
+    )
     parser.add_argument("--vit_output_coverage_tokens", type=int, default=16)
     parser.add_argument(
         "--vit_output_drift_dims",
@@ -298,6 +310,7 @@ def work(QA_CLASS):
                     "update_token_ratio": args.vit_update_token_ratio,
                     "vit_output_token_policy": args.vit_output_token_policy,
                     "vit_output_token_budget": args.vit_output_token_budget,
+                    "vit_output_base_tokens": args.vit_output_base_tokens,
                     "vit_output_coverage_tokens": args.vit_output_coverage_tokens,
                     "vit_output_drift_dims": args.vit_output_drift_dims,
                     "vit_output_selection_space": args.vit_output_selection_space,

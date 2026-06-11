@@ -226,6 +226,21 @@ def summarize(evaluated):
         float(row.get("elapsed_video_sec", 0) or 0)
         for row in final_by_video.values()
     )
+    # 实时流研究不计离线视频文件加载；该指标只累计模型实际参与的在线处理阶段。
+    online_model_pipeline_sec = (
+        init_prompt_wall_sec + video_encode_wall_sec + qa_wall_sec
+    )
+    observed_stream_duration_sec = sum(
+        (
+            float(row.get("loaded_frames", 0) or 0)
+            / float(row.get("sample_fps", 0) or 1)
+        )
+        for row in final_by_video.values()
+    )
+    semantic_input_frames = sum(
+        int(float(row.get("semantic_input_frames", 0) or 0))
+        for row in final_by_video.values()
+    )
     profiled_stream_ingestion_sec = (
         visual_selection_sec
         + visual_encoding_sec
@@ -245,6 +260,8 @@ def summarize(evaluated):
         # 保留旧字段兼容历史脚本；其准确含义是同步后的 encode_video 墙钟时间。
         "total_encode_video_sec": video_encode_wall_sec,
         "wall_clock_sec": {
+            "online_video_processing": video_encode_wall_sec,
+            "online_model_pipeline": online_model_pipeline_sec,
             "video_load": video_load_wall_sec,
             "init_prompt": init_prompt_wall_sec,
             "video_encode": video_encode_wall_sec,
@@ -256,10 +273,7 @@ def summarize(evaluated):
                 video_encode_wall_sec - profiled_stream_ingestion_sec,
             ),
         },
-        "semantic_input_frames": sum(
-            int(float(row.get("semantic_input_frames", 0) or 0))
-            for row in final_by_video.values()
-        ),
+        "semantic_input_frames": semantic_input_frames,
         "semantic_kept_frames": sum(
             int(float(row.get("semantic_kept_frames", 0) or 0))
             for row in final_by_video.values()
@@ -283,6 +297,19 @@ def summarize(evaluated):
             "visual_encoding": visual_encoding_sec,
             "stream_ingestion": profiled_stream_ingestion_sec,
         },
+        "realtime_metrics": {
+            "observed_stream_duration_sec": observed_stream_duration_sec,
+            "online_processing_fps": (
+                semantic_input_frames / video_encode_wall_sec
+                if video_encode_wall_sec
+                else 0.0
+            ),
+            "realtime_compute_ratio": (
+                video_encode_wall_sec / observed_stream_duration_sec
+                if observed_stream_duration_sec
+                else 0.0
+            ),
+        },
         "metric_definitions": {
             "official_three_group_average": (
                 "OVO-Bench 三个任务组的宏平均准确率；先对每个任务求准确率，"
@@ -299,14 +326,31 @@ def summarize(evaluated):
             "stream_ingestion": (
                 "已打点的流式摄入时间：帧选择、视觉编码和视觉 token 上下文写入之和。"
             ),
+            "online_video_processing": (
+                "论文主效率指标：实时帧到达系统后，从调用 encode_video 到完成视觉编码、"
+                "语义筛选和上下文写入的同步墙钟时间；不含视频文件读取、帧到达等待、"
+                "初始化提示和 QA。"
+            ),
+            "online_model_pipeline": (
+                "在线模型总处理时间：初始化提示、online_video_processing 和 QA 之和；"
+                "不含离线视频文件读取与真实时间轴上的帧到达等待。"
+            ),
+            "observed_stream_duration_sec": (
+                "输入帧按采样 FPS 对应的真实时间轴长度；用于判断计算能否跟上实时输入，"
+                "不是程序等待时间。"
+            ),
+            "online_processing_fps": (
+                "全部到达帧数除以 online_video_processing；表示模型在线摄入吞吐。"
+            ),
+            "realtime_compute_ratio": (
+                "online_video_processing 除以输入流时长；小于 1 表示计算速度能跟上实时流。"
+            ),
             "video_encode": (
-                "同步墙钟 encode_video 时间：从调用 encode_video 到返回，"
-                "包含流式摄入及未单独打点的 Python/运行时开销；"
-                "不含视频文件读取、初始化提示和 QA。"
+                "online_video_processing 的兼容别名。"
             ),
             "full_pipeline": (
-                "每个视频从开始读取到最后一个 QA 完成的墙钟时间，"
-                "包含视频读取、初始化提示、视频编码、检索和答案生成。"
+                "离线数据适配器诊断时间：每个视频从文件读取到最后一个 QA 完成；"
+                "包含与实时流系统无关的视频文件读取，禁止用于论文主加速比。"
             ),
             "context_write": (
                 "将保留的视觉 token 送入语言模型并更新 ReKV/KV cache 的同步时间。"
@@ -315,6 +359,17 @@ def summarize(evaluated):
                 "QA 解码前测得的 ReKV/KV cache 实际字节数；"
                 "均值用于总体比较，峰值用于长视频容量分析。"
             ),
+        },
+        "paper_reporting_policy": {
+            "primary_latency_metric": "wall_clock_sec.online_video_processing",
+            "system_latency_metric": "wall_clock_sec.online_model_pipeline",
+            "supporting_breakdown": "latency_scope_sec.stream_ingestion",
+            "realtime_capacity_metric": "realtime_metrics.realtime_compute_ratio",
+            # 离线解码只反映 benchmark 适配器，不代表实时流系统本身。
+            "excluded_from_speedup": [
+                "wall_clock_sec.video_load",
+                "wall_clock_sec.full_pipeline",
+            ],
         },
         "vit_layer_sparse": {
             "dense_frames": sum(
