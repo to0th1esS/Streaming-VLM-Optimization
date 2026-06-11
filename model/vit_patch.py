@@ -30,7 +30,7 @@ def vit_patch_hf(model, **kwargs):
     model.vit_output_reduction_stage = "none"
     if output_postprocess is not None:
         model.vit_output_postprocess = output_postprocess
-    elif output_token_policy == "structured_pool":
+    elif output_token_policy in {"structured_pool", "post_projector_pool"}:
         model.vit_output_postprocess = StructuredGridTokenReducer(
             output_token_budget=int(
                 kwargs.get("vit_output_token_budget", model.n_frame_tokens)
@@ -39,7 +39,11 @@ def vit_patch_hf(model, **kwargs):
                 kwargs.get("vit_output_reference_tokens", 196)
             ),
         )
-        model.vit_output_reduction_stage = "pre_projector"
+        model.vit_output_reduction_stage = (
+            "pre_projector"
+            if output_token_policy == "structured_pool"
+            else "post_projector"
+        )
     elif output_token_policy == "structured_residual":
         model.vit_output_postprocess = StructuredResidualTokenReducer(
             output_token_budget=int(
@@ -171,9 +175,13 @@ def _project_and_postprocess_vit_output(
         "vit_output_postprocess",
         _identity_vit_output_postprocess,
     )
-    if isinstance(
+    if (
+        getattr(self, "vit_output_reduction_stage", "none")
+        == "pre_projector"
+        and isinstance(
         postprocess,
         (StructuredGridTokenReducer, StructuredResidualTokenReducer),
+        )
     ):
         # 在 ViT 原生空间形成固定语义包，再执行 projector，同步减少计算和缓存写入。
         reduced_feature = _profile_call(

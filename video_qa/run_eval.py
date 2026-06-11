@@ -319,6 +319,7 @@ if __name__ == "__main__":
             "coverage_innovation",
             "structured_pool",
             "structured_residual",
+            "post_projector_pool",
         ],
     )
     parser.add_argument("--vit_output_token_budget", type=int, default=196)

@@ -119,6 +119,21 @@ class StructuredGridTokenReducerTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "perfect-square"):
             StructuredGridTokenReducer(output_token_budget=8)
 
+    def test_can_reduce_standard_post_projector_grid(self):
+        reducer = StructuredGridTokenReducer(
+            output_token_budget=4,
+            reference_input_tokens=16,
+        )
+        projected_features = torch.arange(
+            16 * 3,
+            dtype=torch.float32,
+        ).reshape(1, 16, 3)
+
+        reduced = reducer(projected_features, batch_size=1, frames=1)
+
+        self.assertEqual(tuple(reduced.shape), (1, 4, 3))
+        self.assertEqual(reducer.stats["input_tokens"], 16)
+
 
 class StructuredResidualTokenReducerTest(unittest.TestCase):
     def test_combines_regular_base_and_high_residual_detail(self):

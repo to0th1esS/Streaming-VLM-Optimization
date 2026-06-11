@@ -209,6 +209,7 @@ def work(QA_CLASS):
             "coverage_innovation",
             "structured_pool",
             "structured_residual",
+            "post_projector_pool",
         ],
         default="none",
     )
