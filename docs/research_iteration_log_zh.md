@@ -3284,3 +3284,179 @@ Python compile passed
 1. 同进程 A100 微基准中，残差评分开销不能抵消 pre-projector（投影前）压缩收益；
 2. 固定 121 token 下，相比 11 x 11 网格优先修复 HLD / FPD / OCR / SSR 负翻转；
 3. 不允许依靠增加缓存或 query-aware（查询感知）选择获得精度。
+
+### 18.10 时间选择配置审计与第 17 节口径更正
+
+对历史结果逐答案和运行统计进行复核后确认：
+
+```text
+structured_grid_pareto 的 none196
+与
+heldout90_v2 的 periodic96
+
+90 / 90 个预测答案完全一致
+保留帧均为 695
+QA 均为 51.85%
+```
+
+而早期 `stable_z4p0`：
+
+```text
+保留帧 = 691
+candidate frames（候选帧）> 0
+QA = 53.70%
+```
+
+根因是两条路径的 `semantic_selection_feature_source（语义选择特征源）` 不同：
+
+- 第 17 节空间 Pareto 实际使用 `raw_rgb（仅原始像素）` 或周期等价路径；
+- 53.70% 的稳定显著性使用 `hybrid（原始像素提名 + ViT embedding 验证）` 两阶段路径。
+
+因此第 17 节中“空间 Pareto 已叠加稳定显著性时间选择”的表述不准确。
+该节的 196 / 144 / 121 仍是有效的**周期时间选择下空间预算对照**，
+但不能代表当前最佳时间选择器上的空间结果。
+
+**核心 Insight 6：**
+
+> 时间选择策略和空间压缩策略必须形成二维公平实验矩阵；不能只凭保留帧数接近，就假设两种时间选择产生了相同语义流。
+
+已停止三条错误配置的早期运行，并按以下统一配置重启：
+
+```text
+semantic_selection_feature_source = hybrid
+semantic_candidate_multiplier = 1
+semantic_raw_proposal_policy = saliency_gated
+semantic_saliency_z_threshold = 4.0
+```
+
+正确公平对照目录：
+
+```text
+results/ovo_bench/stable_hybrid_spatial_heldout90_20260611/none196_gpu3
+results/ovo_bench/stable_hybrid_spatial_heldout90_20260611/grid121_gpu2
+results/ovo_bench/stable_hybrid_spatial_heldout90_20260611/residual100plus21_gpu1
+```
+
+### 18.11 periodic 时间选择下的 100-token 边界结果
+
+结果目录：
+
+```text
+results/ovo_bench/structured_grid_budget100_heldout90_20260611/
+```
+
+正式统计自动排除 1 个 warmup（预热）样本，保留 90 个评测样本。
+
+主结果：
+
+| 指标 | periodic-196 | periodic-121 | periodic-100 |
+|---|---:|---:|---:|
+| OVO 三组宏平均 | 51.85% | 50.00% | **51.85%** |
+| 保留帧 | 695 | 695 | 695 |
+| 每保留帧 token | 196 | 121 | 100 |
+| 平均 KV cache | 2.337 GB | 1.445 GB | **1.195 GB** |
+| 相对 196 缓存下降 | 0 | 38.18% | **48.87%** |
+
+periodic-100 的任务组：
+
+```text
+backward（向后追溯）= 38.89%
+realtime（实时感知）= 63.89%
+forward（前向响应）= 52.78%
+```
+
+periodic-196 的任务组：
+
+```text
+backward = 33.33%
+realtime = 75.00%
+forward = 47.22%
+```
+
+因此虽然两者总体宏平均都为 51.85%，100-token 相对 196：
+
+```text
+positive flips = 12
+negative flips = 13
+worst-group drop = realtime -11.11 percentage points
+```
+
+主要负迁移：
+
+```text
+OCR: -3
+ATR: -2
+FPD: -2
+HLD: -1
+STU: -1
+```
+
+主要增益：
+
+```text
+ACR: +2
+OJR: +2
+SSR: +2
+EPM: +1
+ASI: +1
+```
+
+**核心 Insight 7：**
+
+> 总体宏平均持平不等于语义能力保持；空间压缩可能在任务组之间重新分配能力，必须增加 worst-group drop（最差任务组下降）约束。
+
+因此 100-token 规则网格暂时不能作为最终工作点。
+它是更强的效率边界和残差方法的必要对照：
+
+- 全局语义和缓存效率很强；
+- 实时细节感知损失明显；
+- 正好需要额外的细节残差通道补偿。
+
+本轮并行运行下的探索性时间：
+
+```text
+online video processing = 30.375 s
+context write = 14.759 s
+online processing FPS = 908.3
+realtime compute ratio = 0.00110
+```
+
+相对单轮 periodic-196：
+
+```text
+context write 下降 16.39%
+online video processing 下降 13.29%
+```
+
+但当前多条实验共享 CPU 和存储，以上墙钟变化只作探索，
+正式论文时延必须在工作点确定后顺序执行并进行 GPU 轮换复验。
+
+### 18.12 全局基底 + 细节残差的 GPU 准入结果
+
+结果：
+
+```text
+results/ovo_bench/structured_residual_component_profile_20260611/
+results/ovo_bench/structured_grid100_component_profile_20260611/
+```
+
+同进程、同 GPU、固定 8 帧 ViT 特征的视觉尾部中位时延：
+
+| 空间策略 | 8 帧 pool + projector |
+|---|---:|
+| 196 dense tail | 17.240 ms |
+| 100 regular grid | **4.752 ms** |
+| 121 regular grid | 4.794 ms |
+| 100 base + 21 residual | 7.242 ms |
+
+结论：
+
+1. 100 与 121 规则网格的视觉尾部几乎同速，差值仅 0.042 ms / 8 帧；
+2. 100 的主要额外系统收益来自更少的上下文写入和缓存，而不是 projector 再次加速；
+3. 残差策略比规则 121 多 2.448 ms / 8 帧；
+4. 按 695 个保留帧折算，残差评分预计只增加约 0.213 秒；
+5. 残差策略相对 196 密集视觉尾部仍有约 2.38x 加速。
+
+因此残差策略通过完整 QA 准入：
+
+> 允许用约 0.21 秒在线计算换取细节任务恢复，同时保持固定 121-token 缓存预算。

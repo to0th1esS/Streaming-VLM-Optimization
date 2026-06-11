@@ -37,6 +37,7 @@ class AnalyzeBandwidthQaFailuresTests(unittest.TestCase):
         self.assertAlmostEqual(rows[0]["recency_share"], 0.4)
         self.assertEqual(report["by_task"]["HLD"]["negative_flips"], 1)
         self.assertEqual(report["by_task"]["ASI"]["positive_flips"], 1)
+        self.assertEqual(report["worst_group_delta"], 0.0)
 
 
 if __name__ == "__main__":

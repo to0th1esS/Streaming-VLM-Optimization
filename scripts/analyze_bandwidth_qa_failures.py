@@ -143,6 +143,14 @@ def summarize_flip_cohorts(rows):
 
 def build_report(baseline_rows, candidate_rows):
     comparisons = compare_rows(baseline_rows, candidate_rows)
+    by_group = summarize_group(comparisons, "benchmark_group")
+    group_deltas = {
+        group_name: (
+            values["candidate_micro_accuracy"]
+            - values["baseline_micro_accuracy"]
+        )
+        for group_name, values in by_group.items()
+    }
     return comparisons, {
         "samples": len(comparisons),
         # 逐样本微平均仅用于定位翻转；论文主质量仍使用 OVO 三组宏平均。
@@ -152,7 +160,17 @@ def build_report(baseline_rows, candidate_rows):
         "candidate_micro_accuracy": mean(
             row["candidate_score"] for row in comparisons
         ),
-        "by_group": summarize_group(comparisons, "benchmark_group"),
+        "baseline_three_group_macro": mean(
+            values["baseline_micro_accuracy"]
+            for values in by_group.values()
+        ),
+        "candidate_three_group_macro": mean(
+            values["candidate_micro_accuracy"]
+            for values in by_group.values()
+        ),
+        "worst_group_delta": min(group_deltas.values(), default=0.0),
+        "group_deltas": group_deltas,
+        "by_group": by_group,
         "by_task": summarize_group(comparisons, "benchmark_task"),
         "by_flip": summarize_flip_cohorts(comparisons),
         "metric_definitions": {
@@ -161,6 +179,10 @@ def build_report(baseline_rows, candidate_rows):
             "micro_accuracy": (
                 "所有查询逐样本等权平均，仅用于失效定位；"
                 "不替代 OVO-Bench 三任务组宏平均主指标。"
+            ),
+            "worst_group_delta": (
+                "候选方法相对基线在三个任务组中最小的准确率变化；"
+                "用于防止总体平均掩盖单类任务退化。"
             ),
             "recency_share": "候选方法近期锚点帧数除以全部保留帧数。",
             "online_video_processing_sec": (

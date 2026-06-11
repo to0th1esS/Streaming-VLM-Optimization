@@ -95,6 +95,18 @@ def evaluate_rows(rows):
     return evaluated
 
 
+def exclude_prefixed_videos(rows, prefixes):
+    prefixes = tuple(prefix for prefix in prefixes if prefix)
+    if not prefixes:
+        return rows, 0
+    kept = [
+        row
+        for row in rows
+        if not str(row.get("video_id", "")).startswith(prefixes)
+    ]
+    return kept, len(rows) - len(kept)
+
+
 def mean(values):
     return sum(values) / len(values) if values else 0.0
 
@@ -481,14 +493,25 @@ def parse_args():
     parser.add_argument("--pred-path", required=True)
     parser.add_argument("--output-csv", required=True)
     parser.add_argument("--output-json", required=True)
+    parser.add_argument(
+        "--exclude-video-prefix",
+        action="append",
+        default=["warmup-"],
+        help="汇总前排除指定 video_id 前缀；默认排除预热样本。",
+    )
     return parser.parse_args()
 
 
 def main():
     args = parse_args()
-    evaluated = evaluate_rows(read_csv(args.pred_path))
+    rows, excluded_rows = exclude_prefixed_videos(
+        read_csv(args.pred_path),
+        args.exclude_video_prefix,
+    )
+    evaluated = evaluate_rows(rows)
     summary = summarize(evaluated)
     summary["pred_path"] = args.pred_path
+    summary["excluded_rows"] = excluded_rows
     write_csv(args.output_csv, evaluated)
     write_json(args.output_json, summary)
     print(json.dumps(summary, ensure_ascii=False, indent=2))

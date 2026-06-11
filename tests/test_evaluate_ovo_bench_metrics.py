@@ -1,9 +1,20 @@
 import unittest
 
-from scripts.evaluate_ovo_bench import summarize
+from scripts.evaluate_ovo_bench import exclude_prefixed_videos, summarize
 
 
 class EvaluateOvoBenchMetricTests(unittest.TestCase):
+    def test_warmup_prefix_is_excluded_from_official_summary_input(self):
+        rows = [
+            {"video_id": "warmup-a"},
+            {"video_id": "ovo-1"},
+        ]
+
+        kept, excluded = exclude_prefixed_videos(rows, ["warmup-"])
+
+        self.assertEqual([row["video_id"] for row in kept], ["ovo-1"])
+        self.assertEqual(excluded, 1)
+
     def test_wall_clock_scopes_are_reported_without_changing_legacy_total(self):
         row = {
             "video_id": "video-1",
