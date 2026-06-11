@@ -241,6 +241,10 @@ def summarize(evaluated):
         int(float(row.get("semantic_input_frames", 0) or 0))
         for row in final_by_video.values()
     )
+    arrived_frames = sum(
+        int(float(row.get("loaded_frames", 0) or 0))
+        for row in final_by_video.values()
+    )
     profiled_stream_ingestion_sec = (
         visual_selection_sec
         + visual_encoding_sec
@@ -274,6 +278,7 @@ def summarize(evaluated):
             ),
         },
         "semantic_input_frames": semantic_input_frames,
+        "arrived_frames": arrived_frames,
         "semantic_kept_frames": sum(
             int(float(row.get("semantic_kept_frames", 0) or 0))
             for row in final_by_video.values()
@@ -300,7 +305,7 @@ def summarize(evaluated):
         "realtime_metrics": {
             "observed_stream_duration_sec": observed_stream_duration_sec,
             "online_processing_fps": (
-                semantic_input_frames / video_encode_wall_sec
+                arrived_frames / video_encode_wall_sec
                 if video_encode_wall_sec
                 else 0.0
             ),
@@ -340,7 +345,8 @@ def summarize(evaluated):
                 "不是程序等待时间。"
             ),
             "online_processing_fps": (
-                "全部到达帧数除以 online_video_processing；表示模型在线摄入吞吐。"
+                "实际到达帧数除以 online_video_processing；表示模型在线摄入吞吐，"
+                "不依赖是否启用语义门控。"
             ),
             "realtime_compute_ratio": (
                 "online_video_processing 除以输入流时长；小于 1 表示计算速度能跟上实时流。"
@@ -397,6 +403,51 @@ def summarize(evaluated):
             ),
         },
         "vit_output_reduction": {
+            "policy": next(
+                (
+                    row.get("vit_output_policy", "")
+                    for row in final_by_video.values()
+                    if row.get("vit_output_policy", "")
+                ),
+                "",
+            ),
+            "budget_per_frame": max(
+                (
+                    int(float(row.get("vit_output_budget_per_frame", 0) or 0))
+                    for row in final_by_video.values()
+                ),
+                default=0,
+            ),
+            "base_tokens_per_frame": max(
+                (
+                    int(
+                        float(
+                            row.get(
+                                "vit_output_base_tokens_per_frame",
+                                0,
+                            )
+                            or 0
+                        )
+                    )
+                    for row in final_by_video.values()
+                ),
+                default=0,
+            ),
+            "residual_tokens_per_frame": max(
+                (
+                    int(
+                        float(
+                            row.get(
+                                "vit_output_residual_tokens_per_frame",
+                                0,
+                            )
+                            or 0
+                        )
+                    )
+                    for row in final_by_video.values()
+                ),
+                default=0,
+            ),
             "input_tokens": output_input_tokens,
             "output_tokens": output_tokens,
             "reduction_ratio": (

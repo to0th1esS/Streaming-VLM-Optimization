@@ -319,6 +319,26 @@ class ReKVStreamVQA(BaseVQA):
                     "drift_feature_dims",
                     0,
                 ),
+                'vit_output_policy': getattr(
+                    self.qa_model,
+                    "vit_output_token_policy",
+                    "none",
+                ),
+                'vit_output_budget_per_frame': getattr(
+                    output_postprocess,
+                    "output_token_budget",
+                    self.qa_model.n_frame_tokens,
+                ),
+                'vit_output_base_tokens_per_frame': getattr(
+                    output_postprocess,
+                    "base_token_budget",
+                    0,
+                ),
+                'vit_output_residual_tokens_per_frame': getattr(
+                    output_postprocess,
+                    "residual_token_budget",
+                    0,
+                ),
                 'kv_cache_memory_bytes': kv_cache_memory["total_bytes"],
                 'kv_cache_cpu_memory_bytes': kv_cache_memory["cpu_bytes"],
                 'kv_cache_gpu_memory_bytes': kv_cache_memory["gpu_bytes"],

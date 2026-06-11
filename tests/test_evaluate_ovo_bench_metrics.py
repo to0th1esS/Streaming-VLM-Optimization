@@ -18,6 +18,10 @@ class EvaluateOvoBenchMetricTests(unittest.TestCase):
             "loaded_frames": "20",
             "sample_fps": "2.0",
             "semantic_input_frames": "20",
+            "vit_output_policy": "structured_residual",
+            "vit_output_budget_per_frame": "121",
+            "vit_output_base_tokens_per_frame": "100",
+            "vit_output_residual_tokens_per_frame": "21",
             "semantic_proposal_sec": "0.5",
             "semantic_preprocess_sec": "1.5",
             "semantic_embedding_sec": "1.0",
@@ -51,6 +55,15 @@ class EvaluateOvoBenchMetricTests(unittest.TestCase):
         )
         self.assertEqual(result["realtime_metrics"]["online_processing_fps"], 2.0)
         self.assertEqual(result["realtime_metrics"]["realtime_compute_ratio"], 1.0)
+        self.assertEqual(result["arrived_frames"], 20)
+        self.assertEqual(
+            result["vit_output_reduction"]["policy"],
+            "structured_residual",
+        )
+        self.assertEqual(
+            result["vit_output_reduction"]["residual_tokens_per_frame"],
+            21,
+        )
         self.assertEqual(
             result["wall_clock_sec"]["video_encode_unprofiled"],
             1.5,

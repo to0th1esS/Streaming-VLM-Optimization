@@ -22,6 +22,7 @@ def vit_patch_hf(model, **kwargs):
     model.vit_sparse_encode_chunk_size = kwargs.get("vit_sparse_encode_chunk_size", 1)
     output_postprocess = kwargs.get("vit_output_postprocess")
     output_token_policy = kwargs.get("vit_output_token_policy", "none")
+    model.vit_output_token_policy = output_token_policy
     model.vit_output_selection_space = kwargs.get(
         "vit_output_selection_space",
         "projected",
