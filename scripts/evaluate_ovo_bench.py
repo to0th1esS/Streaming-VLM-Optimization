@@ -379,14 +379,22 @@ def summarize(evaluated):
             ),
         },
         "paper_reporting_policy": {
+            "system_input_contract": (
+                "输入是实时采集链路已经交付、已解码并按时间顺序到达的 RGB 帧；"
+                "论文方法从帧到达模型侧开始计时。"
+            ),
             "primary_latency_metric": "wall_clock_sec.online_video_processing",
             "system_latency_metric": "wall_clock_sec.online_model_pipeline",
             "supporting_breakdown": "latency_scope_sec.stream_ingestion",
             "realtime_capacity_metric": "realtime_metrics.realtime_compute_ratio",
-            # 离线解码只反映 benchmark 适配器，不代表实时流系统本身。
+            # 离线读取和解码只反映 benchmark 适配器，不代表实时流模型系统本身。
             "excluded_from_speedup": [
                 "wall_clock_sec.video_load",
                 "wall_clock_sec.full_pipeline",
+                "camera_capture",
+                "network_transport",
+                "video_decode",
+                "frame_arrival_wait",
             ],
         },
         "vit_layer_sparse": {

@@ -3725,3 +3725,171 @@ vit_output_token_policy = post_projector_sample
 ```
 
 目标是在保持对齐后压缩原则的同时，将空间操作降为规则索引成本。
+
+### 18.17 投影后规则采样：近零附加计算下保留主要质量收益
+
+实验目的：
+
+- 验证投影后压缩的质量收益是否依赖高成本双线性插值；
+- 将空间压缩改成硬件友好的规则索引，尽量保留缓存收益而不增加在线视频处理时延；
+- 继续遵守实时流边界，只统计帧到达模型侧后的处理和上下文写入。
+
+配置：
+
+```text
+temporal selector = stable hybrid
+event window = 96 frames
+candidate multiplier = 1
+spatial policy = post_projector_sample
+spatial grid = 14x14 -> regular 11x11
+tokens per kept frame = 121
+sample FPS = 1
+```
+
+结果目录：
+
+```text
+results/ovo_bench/stable_hybrid_postsample121_heldout90_20260611/
+results/ovo_bench/post_projector_sample_component_profile_20260611/
+```
+
+主结果：
+
+| 方法 | QA 三组宏平均 | backward | realtime | forward | 在线视频处理 | 在线吞吐 | 平均 cache |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| Dense-1FPS | 50.93% | 44.44% | 63.89% | 44.44% | 2116.33s | 13.04 FPS | 6.354 GB |
+| hybrid-196 | 53.70% | 33.33% | 77.78% | 50.00% | 31.94s | 863.69 FPS | 2.336 GB |
+| hybrid + post-pool-121 | **57.41%** | 38.89% | 75.00% | **58.33%** | 39.13s | 705.02 FPS | 1.444 GB |
+| hybrid + post-sample-121 | 55.56% | **38.89%** | 75.00% | 52.78% | **32.50s** | **848.99 FPS** | **1.444 GB** |
+
+相对 hybrid-196：
+
+```text
+QA: +1.85 percentage points
+backward: +5.56 percentage points
+forward: +2.78 percentage points
+realtime: -2.78 percentage points
+online video processing: +1.73% time
+mean/max cache: -38.18%
+positive flips: 4
+negative flips: 3
+exact McNemar p-value: 1.000
+```
+
+相对 Dense-1FPS：
+
+```text
+QA: +4.63 percentage points
+online video processing speedup: 65.13x
+mean cache: -77.27%
+max cache: -92.54%
+positive flips: 12
+negative flips: 6
+exact McNemar p-value: 0.238
+```
+
+注意：以上在线加速严格使用 `online_video_processing`，Dense 的 1961.55 秒、
+规则采样实验的 2043.30 秒离线文件加载均被排除。
+
+同进程算子微基准：
+
+```text
+dense projector + standard pool = 17.222 ms / 8 frames
+post-projector bilinear pool only = 9.317 ms / 8 frames
+post-projector regular sample only = 0.117 ms / 8 frames
+dense projector + regular sample = 17.294 ms / 8 frames
+```
+
+规则采样相对双线性池化：
+
+```text
+在线视频处理时间降低 16.96%
+QA 降低 1.85 percentage points
+缓存占用完全相同
+```
+
+**核心 Insight 11：**
+
+> 投影后的压缩边界本身带来主要的质量与存储收益；双线性平滑还提供额外语义正则化，
+> 但规则采样证明该方向可以在几乎零附加算子成本下工作。最终算法不应在两者中机械二选一，
+> 而应研究低成本、局部对齐的语义平滑算子。
+
+当前判断：
+
+- `post_projector_sample` 是速度优先版本，适合验证端到端效率上界；
+- `post_projector_pool` 是质量优先版本，适合验证压缩边界的语义上界；
+- 下一步只在两者之间研究一个统一的轻量对齐算子，不继续增加独立工程分支。
+
+### 18.18 简单双时间尺度锚点被否定
+
+实验配置：
+
+```text
+fast event window = 96 frames
+slow coverage interval = 384 frames
+coverage updates event anchor = false
+tokens per frame = 196
+```
+
+结果：
+
+| 方法 | 保留帧 | QA | backward | realtime | forward | 在线视频处理 | 平均 cache |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| hybrid-196 | 691 | **53.70%** | 33.33% | 77.78% | **50.00%** | **31.94s** | **2.336 GB** |
+| dual-timescale coverage | 814 | 52.78% | 33.33% | 77.78% | 47.22% | 40.43s | 2.367 GB |
+
+现象：
+
+- 保留帧增加 17.8%，但 backward 完全没有改善；
+- forward 下降 2.78 个百分点；
+- 在线处理时间增加 26.6%；
+- 平均缓存增加 1.31%。
+
+**核心 Insight 12：**
+
+> 长期问答缺失不是简单的时间覆盖不足。周期性追加慢锚点只增加冗余帧，
+> 没有形成可持续的语义状态；长期能力需要查询无关的状态整合或缓存侧记忆，
+> 而不是更密的周期采样。
+
+因此否定当前简单 coverage anchor（覆盖锚点），但不否定双时间尺度思想。
+后续若重启该方向，慢分支必须保存“状态变化摘要”，而不是原始帧副本。
+
+### 18.19 实时流系统边界最终约定
+
+后续所有论文实验固定以下输入契约：
+
+```text
+实时采集/传输/解码链路
+-> 已解码 RGB 帧按时间顺序到达（系统输入）
+-> 查询无关语义帧选择
+-> 视觉编码与投影后空间压缩
+-> 上下文写入和 ReKV/KV cache 更新（系统输出）
+```
+
+主加速指标：
+
+```text
+online_video_processing
+= 帧进入 encode_video 后
+  到视觉语义写入上下文完成并同步 GPU 的墙钟时间
+```
+
+禁止进入主加速比的时间：
+
+```text
+camera capture / 摄像头采集
+network transport / 网络传输
+video file load / 离线文件读取
+video decode / 视频解码
+frame arrival wait / 自然帧间等待
+QA decode / 问答生成
+```
+
+其中 QA 生成单独报告为系统辅助指标，不与视觉流摄入加速混为一谈。
+评测 JSON 的 `paper_reporting_policy.system_input_contract` 和
+`excluded_from_speedup` 已将该边界机器可读化，防止后续脚本误用。
+
+论文表述原则：
+
+> 本方法优化的是实时帧到达后的模型侧视觉摄入与语义上下文维护，
+> 不把离线 benchmark 文件读取或解码速度计入方法收益。

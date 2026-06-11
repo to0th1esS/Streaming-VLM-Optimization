@@ -85,7 +85,15 @@ class EvaluateOvoBenchMetricTests(unittest.TestCase):
             "wall_clock_sec.online_video_processing",
         )
         self.assertIn(
+            "已解码",
+            result["paper_reporting_policy"]["system_input_contract"],
+        )
+        self.assertIn(
             "wall_clock_sec.full_pipeline",
+            result["paper_reporting_policy"]["excluded_from_speedup"],
+        )
+        self.assertIn(
+            "video_decode",
             result["paper_reporting_policy"]["excluded_from_speedup"],
         )
 
